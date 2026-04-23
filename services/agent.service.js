@@ -18,6 +18,8 @@ Rules:
 - If the user asks to list, show, or fetch objectives, use the get_objectives tool.
 - If the user asks about profile, organization details, company information, mission, or vision, use the get_profile tool.
 - If the user asks about departments, team progress, or department list, use the get_departments tool.
+- If the user asks for business growth suggestions, OKR advice, strategic objectives, key results, or how to manage objectives, use strategy_advice.
+- If the user asks how department objectives should support an organization objective, use department_alignment.
 - If the user asks what you can do, use the send_help tool.
 - If the user request is missing key information for creating an objective, ask a follow-up question instead of guessing.
 - Never invent backend data. Use tools for backend data.
@@ -73,6 +75,8 @@ const HELP_TEXT = [
   '- "Show my objectives"',
   '- "Get my company profile"',
   '- "List departments and progress"',
+  '- "Suggest company objectives to grow my business"',
+  '- "Break this organization objective into department objectives"',
 ].join("\n");
 
 const buildConversationContext = (history = []) => {
@@ -96,17 +100,20 @@ const buildPlannerMessages = ({ message, session, history }) => {
         "",
         "You are an intent planner for this bot.",
         "Return only valid JSON.",
-        "Pick one action from: create_objective, get_objectives, get_profile, get_departments, send_help, ask_clarification, general_reply.",
+        "Pick one action from: create_objective, get_objectives, get_profile, get_departments, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
         "Schema:",
         '{',
         '  "action": "string",',
         '  "objectiveName": "string",',
         '  "description": "string",',
+        '  "organizationObjective": "string",',
         '  "reply": "string"',
         '}',
         'Use empty strings when a field is not needed.',
         'If the user is asking for help or greeting, use send_help or general_reply.',
         'If objective creation is requested but the title is unclear, use ask_clarification.',
+        'Use strategy_advice for broad OKR/business-growth guidance.',
+        'Use department_alignment when the user wants department objectives or department-wise breakdown from a company/organization objective.',
       ].join("\n"),
     },
     {
@@ -200,8 +207,62 @@ const normalizePlan = (plan) => {
     action: plan.action || "general_reply",
     objectiveName: plan.objectiveName || "",
     description: plan.description || "",
+    organizationObjective: plan.organizationObjective || "",
     reply: plan.reply || "",
   };
+};
+
+const buildStrategyMessages = ({ message, profile, departments, mode, organizationObjective }) => {
+  const departmentList = departments?.length
+    ? departments
+        .map((department, index) => {
+          return `${index + 1}. ${department.departmentName || "-"} (${department.fullName || "No owner"})`;
+        })
+        .join("\n")
+    : "No department data available.";
+
+  const profileSummary = profile
+    ? [
+        `Company: ${profile.companyName || "-"}`,
+        `Organization name: ${profile.fullName || "-"}`,
+        `About: ${profile.aboutCompany || "-"}`,
+        `Mission: ${profile.companyMission || "-"}`,
+        `Vision: ${profile.companyVision || "-"}`,
+        `Purpose: ${profile.purpose || "-"}`,
+        `Solution: ${profile.solution || "-"}`,
+      ].join("\n")
+    : "No organization profile available.";
+
+  return [
+    {
+      role: "system",
+      content: [
+        "You are an OKR strategy advisor for a business using Telegram.",
+        "Write practical, structured guidance.",
+        "Keep the response concise but useful.",
+        "Prefer 1-3 organization objectives and 3-5 measurable key results per objective.",
+        "Key results must be outcome-focused, not task-focused.",
+        "If department alignment is requested, map likely department contributions from the organization objective.",
+        "Avoid markdown symbols like ** because Telegram plain text may show them literally.",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: [
+        `Mode: ${mode}`,
+        `User request: ${message}`,
+        `Organization objective hint: ${organizationObjective || "-"}`,
+        "",
+        "Organization profile:",
+        profileSummary,
+        "",
+        "Known departments:",
+        departmentList,
+        "",
+        "Respond with plain text sections and actionable suggestions.",
+      ].join("\n"),
+    },
+  ];
 };
 
 const buildFinalMessages = ({ message, plan, toolResult }) => {
@@ -253,6 +314,31 @@ const runAgent = async ({ message, session, history }) => {
       text:
         plan.reply ||
         "I can help with objectives, profile details, and department progress.",
+    };
+  }
+
+  if (plan.action === "strategy_advice" || plan.action === "department_alignment") {
+    const profileResponse = await getCurrentOrganizationProfile(session.token);
+    const departmentResponse = await getDepartments(session.token);
+    const departments =
+      departmentResponse.data.data.departments ||
+      departmentResponse.data.data.departmentUsers ||
+      [];
+
+    const strategyResponse = await chatWithModel({
+      messages: buildStrategyMessages({
+        message,
+        profile: profileResponse.data.data,
+        departments,
+        mode: plan.action,
+        organizationObjective: plan.organizationObjective || plan.reply,
+      }),
+    });
+
+    return {
+      text:
+        strategyResponse.message?.content?.trim() ||
+        "I can help design organization and department OKRs from your business goals.",
     };
   }
 

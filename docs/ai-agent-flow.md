@@ -56,6 +56,8 @@ The agent can currently use these tools:
 - `get_objectives`
 - `get_profile`
 - `get_departments`
+- `strategy_advice`
+- `department_alignment`
 - `send_help`
 
 Those tools map to your existing backend services:
@@ -101,6 +103,8 @@ user: list all my current okrs
 user: create an objective for improving customer retention this quarter
 user: show my organization profile
 user: list departments with progress
+user: suggest company objectives to grow my business
+user: break this organization objective into department objectives
 ```
 
 The user does not need to use one exact fixed command anymore.
@@ -170,6 +174,7 @@ So the architecture is:
 - Conversation history is also in-memory.
 - Ollama must be running locally or on the configured host.
 - If backend APIs change response shape, the tool formatters may need updates.
+- The current agent does not browse the internet yet. It can reason and suggest based on the model, but online research needs a dedicated search tool or external research API.
 
 ## Files involved
 
@@ -195,3 +200,196 @@ Examples of future tools:
 - get dashboards
 - update objective progress
 - fetch team performance summary
+
+## Strategic advice flow
+
+The agent can be used in two different advisory modes:
+
+### 1. Internal strategy mode
+
+In this mode, the user asks for help such as:
+
+```text
+How can I use my objectives to grow my business?
+What should my company goals be for this quarter?
+How should I manage objectives across teams?
+```
+
+The agent can already answer these using:
+
+- company profile data
+- organization context
+- conversation history
+- general reasoning from the model
+
+This works now, but the advice is based on the model and your internal context, not on live internet research.
+
+Example prompts that work now:
+
+```text
+Suggest company objectives to increase revenue this quarter
+How should I manage objectives to improve my business?
+Create 3 organization OKRs for growth based on my company profile
+```
+
+### 2. Online research mode
+
+If you want the agent to check the internet and then give suggestions, we need to add a web-search capability to the agent.
+
+That future flow would be:
+
+1. User asks for strategic guidance
+2. Agent detects this is a research request
+3. Agent calls a search tool
+4. Agent summarizes market guidance, OKR references, or industry benchmarks
+5. Agent converts findings into business objectives and key results
+6. Agent suggests department-wise aligned objectives
+
+Right now, step 3 is not implemented in the Telegram bot code.
+
+## How to use objectives to improve business
+
+A practical OKR approach is:
+
+1. Start from one business outcome, not many
+2. Define 1 to 3 organization objectives for a quarter
+3. Assign 3 to 5 measurable key results per objective
+4. Derive department objectives from the organization objective
+5. Review progress every week and score monthly
+
+General OKR guidance from Atlassian says strong OKRs usually follow these rules:
+
+- define 1 to 3 objectives
+- use 3 to 5 key results per objective
+- keep key results measurable and outcome-oriented
+- review progress regularly
+
+Sources:
+
+- Atlassian OKR Playbook: https://www.atlassian.com/team-playbook/plays/okrs
+- Atlassian OKR Guide: https://www.atlassian.com/agile/agile-at-scale/okr
+- Workpath alignment article: https://www.workpath.com/en/magazine/alignment-through-okrs
+
+## Example organization objective to department objective flow
+
+Suppose the company-level objective is:
+
+```text
+Objective: Increase profitable revenue growth in Q3
+```
+
+Possible company key results:
+
+- Increase quarterly revenue from 10 Cr to 13 Cr
+- Improve gross margin from 28% to 34%
+- Increase repeat customer rate from 32% to 42%
+
+That organization objective can then be translated into department objectives like this:
+
+### Sales department
+
+```text
+Objective: Win more qualified revenue faster
+```
+
+Key result examples:
+
+- Increase qualified pipeline coverage from 2.1x to 3.0x
+- Improve win rate from 18% to 24%
+- Reduce average sales cycle from 45 days to 32 days
+
+### Marketing department
+
+```text
+Objective: Generate higher-converting demand for revenue growth
+```
+
+Key result examples:
+
+- Increase marketing-qualified leads by 40%
+- Improve landing page conversion from 3.2% to 5.5%
+- Reduce cost per qualified lead by 20%
+
+### Customer success / support
+
+```text
+Objective: Increase retention and expansion from existing customers
+```
+
+Key result examples:
+
+- Reduce churn from 6% to 4%
+- Increase upsell revenue by 25%
+- Improve NPS from 38 to 50
+
+### Product / operations
+
+```text
+Objective: Improve delivery quality and speed to support growth
+```
+
+Key result examples:
+
+- Reduce onboarding time from 10 days to 4 days
+- Reduce critical issue resolution time from 48 hours to 12 hours
+- Improve release success rate from 92% to 98%
+
+## How to derive department objectives from an organization objective
+
+Use this logic:
+
+1. Define the company outcome clearly
+2. Ask which departments directly influence that outcome
+3. For each department, define its contribution in one sentence
+4. Convert that contribution into one department objective
+5. Add measurable key results owned by that department
+
+Simple formula:
+
+```text
+Organization objective -> Department contribution -> Department objective -> Department key results
+```
+
+Example:
+
+```text
+Organization objective:
+Improve customer retention this quarter
+
+Sales contribution:
+Sell to better-fit customers
+
+Customer success contribution:
+Improve onboarding and adoption
+
+Product contribution:
+Reduce friction in key workflows
+```
+
+Then the department objectives become aligned without copying the same wording everywhere.
+
+Example prompt that works now:
+
+```text
+My organization objective is to improve customer retention this quarter. What should be the objectives for sales, customer success, product, and operations?
+```
+
+## Recommended management cadence
+
+To manage these objectives well:
+
+- Set OKRs quarterly
+- Review leading indicators weekly
+- Review KR score monthly
+- Keep organization objectives stable during the quarter unless strategy changes
+- Allow department initiatives to change if KRs are off track
+
+## What the agent can do next
+
+The current bot can already help with:
+
+- suggesting organization objectives from your business context
+- translating organization objectives into department objectives
+- helping rewrite vague goals into measurable OKRs
+
+If you want full online-research-based strategic recommendations inside Telegram, the next enhancement is to add a research/search tool to the agent.

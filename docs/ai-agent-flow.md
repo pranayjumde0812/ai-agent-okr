@@ -1,57 +1,63 @@
-# OKR AI Agent
+# OKR Tool Server
 
-This project now works as a Telegram-based AI agent, not just a fixed command bot.
+This project now supports two modes:
 
-## What it is
+- recommended: OpenClaw uses this repo as an OKR tool server
+- legacy compatibility: Telegram webhook mode through `/ai`
 
-The bot receives Telegram messages on `POST /ai`, understands the user's intent with your local Ollama model, decides which backend action to use, calls that backend tool, and then replies in natural language.
+## Recommended architecture
 
-It is a hybrid AI agent:
+For your current setup, the recommended architecture is:
 
-- Login and OTP are handled deterministically for reliability.
-- After login, normal user requests are handled by the AI agent.
-- The AI agent chooses from backend tools instead of relying only on exact keyword matches.
+- Telegram handled by OpenClaw Gateway
+- agent reasoning handled by OpenClaw
+- this repo exposes OKR business capabilities as HTTP tool endpoints
+- backend business data still comes from your OKR backend on port `3000`
+
+That means OpenClaw should be the main agent, and this repo should focus on tool execution.
 
 ## Main flow
 
-### 1. Telegram sends a webhook request
+### 1. OpenClaw calls the tool server
 
-Telegram sends updates to your server webhook.
+OpenClaw can call this repo through `/tools/...` endpoints.
 
-Your OpenClaw or Telegram webhook config should point to:
+Core endpoints:
 
 ```text
-POST /ai
+GET /tools/capabilities
+POST /tools/auth/send-otp
+POST /tools/auth/verify-otp
+POST /tools/auth/logout
+GET /tools/profile
+GET /tools/objectives
+POST /tools/objectives
+PATCH /tools/objectives/progress
+POST /tools/key-results
+GET /tools/departments
+POST /tools/strategy/advice
+POST /tools/strategy/department-alignment
 ```
 
-In this project, that route is mounted in [server.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/server.js:1) and handled by [routes/ai.routes.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/routes/ai.routes.js:1).
+These routes are mounted in [server.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/server.js:1) and implemented in [routes/tools.routes.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/routes/tools.routes.js:1).
 
-### 2. Auth flow happens first
+### 2. Auth flow
 
-Handled in [controllers/ai.controller.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/controllers/ai.controller.js:1).
+Handled in [controllers/tools.controller.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/controllers/tools.controller.js:1).
 
-- If the user sends an email address, the bot sends OTP.
-- If the user sends the OTP, the bot verifies it.
+- `send-otp` sends the OTP.
+- `verify-otp` verifies it and returns a token.
 - The access token and chat history are stored in [utils/session.store.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/utils/session.store.js:1).
 - Sessions are persisted to disk, so restart no longer logs every user out immediately.
 
-### 3. AI agent takes over
+### 3. Tool execution
 
-After login, user messages are sent to [services/agent.service.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/services/agent.service.js:1).
+OpenClaw can then call tool endpoints with either:
 
-The agent:
+- `Authorization: Bearer <token>`
+- or a stored `userId` / `telegramUserId`
 
-1. Reads the current message
-2. Reads recent conversation history
-3. Sends the request to Ollama
-4. Lets the model choose the intended action
-5. Executes the selected backend tool
-6. Sends the tool result back to the model for a final natural reply
-7. Returns a natural-language reply to Telegram
-
-### 4. Backend tools available to the agent
-
-The agent can currently use these tools:
+Supported tool capabilities:
 
 - `create_objective`
 - `create_key_result`
@@ -61,7 +67,6 @@ The agent can currently use these tools:
 - `get_departments`
 - `strategy_advice`
 - `department_alignment`
-- `send_help`
 
 Those tools map to your existing backend services:
 
@@ -69,50 +74,30 @@ Those tools map to your existing backend services:
 - [services/auth.service.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/services/auth.service.js:1)
 - [services/department.service.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/services/department.service.js:1)
 
-## How the bot behaves
+### 4. Health and readiness
 
-### Before login
-
-The bot will ask the user to log in first by sending their email.
-
-Example:
+Health endpoint:
 
 ```text
-user: hi
-bot: Please login first by sending your email address.
+GET /health
 ```
 
-### During login
+This returns:
 
-Example:
+- backend reachability
+- Ollama reachability
+- configured model availability
+- session-store stats
+
+## Legacy mode
+
+Legacy Telegram webhook mode still exists on:
 
 ```text
-user: user@company.com
-bot: OTP sent to your email
-
-user: 123456
-bot: Login successful
+POST /ai
 ```
 
-### After login
-
-The bot should behave like an assistant, not a rigid command parser.
-
-Examples:
-
-```text
-user: show my objectives
-user: list all my current okrs
-user: create an objective for improving customer retention this quarter
-user: create a key result for my revenue objective
-user: update my onboarding objective progress to 60%
-user: show my organization profile
-user: list departments with progress
-user: suggest company objectives to grow my business
-user: break this organization objective into department objectives
-```
-
-The user does not need to use one exact fixed command anymore.
+This is kept for compatibility, but it is no longer the recommended long-term architecture if OpenClaw is already acting as the main Telegram agent.
 
 ## Telegram usage
 
@@ -138,9 +123,17 @@ KEY_RESULT_API_PATH=/key-result
 OBJECTIVE_PROGRESS_API_PATH=/objective/progress
 ```
 
-### Step 3. Configure Telegram webhook
+### Step 3. Configure OpenClaw to use the tool server
 
-Your Telegram/OpenClaw webhook must send updates to:
+Use:
+
+```text
+GET  /tools/capabilities
+```
+
+to discover available tool routes.
+
+If you still use legacy webhook mode, Telegram/OpenClaw webhook can point to:
 
 ```text
 http://your-server-url/ai
@@ -148,17 +141,9 @@ http://your-server-url/ai
 
 If you are using a reverse proxy or public tunnel, use that public URL.
 
-Health endpoint:
-
-```text
-GET /health
-```
-
-This returns backend reachability, Ollama reachability, configured model availability, and session-store stats.
-
 ### Step 4. Talk to the bot in Telegram
 
-Suggested first test:
+If you are using legacy mode, suggested first test:
 
 ```text
 /start
@@ -168,6 +153,17 @@ show my profile
 create an objective for improving sales this quarter
 create a key result for my sales objective with target 25%
 update my sales objective progress to 40%
+```
+
+If you are using the tool-server mode, test these HTTP endpoints first:
+
+```text
+GET /health
+GET /tools/capabilities
+POST /tools/auth/send-otp
+POST /tools/auth/verify-otp
+GET /tools/profile
+GET /tools/objectives
 ```
 
 ## Behavior design
@@ -187,6 +183,8 @@ So the architecture is:
 - tool execution against your backend
 - natural-language final response
 
+In the recommended OpenClaw setup, the AI intent understanding moves to OpenClaw, and this repo focuses on tool execution.
+
 ## Current limitations
 
 - Ollama must be running locally or on the configured host.
@@ -197,6 +195,8 @@ So the architecture is:
 ## Files involved
 
 - [server.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/server.js:1): app bootstrap and route mounting
+- [routes/tools.routes.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/routes/tools.routes.js:1): OKR tool endpoints for OpenClaw
+- [controllers/tools.controller.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/controllers/tools.controller.js:1): tool-server HTTP handlers
 - [routes/ai.routes.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/routes/ai.routes.js:1): `/ai` route
 - [controllers/ai.controller.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/controllers/ai.controller.js:1): webhook controller and auth gating
 - [services/agent.service.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/services/agent.service.js:1): Ollama-based planning and action flow

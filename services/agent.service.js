@@ -407,6 +407,60 @@ const buildFinalMessages = ({ message, plan, toolResult }) => {
   ];
 };
 
+const loadStrategyContext = async (token) => {
+  const profileResponse = await getCurrentOrganizationProfile(token);
+  const departmentResponse = await getDepartments(token);
+  const departments =
+    departmentResponse.data.data.departments ||
+    departmentResponse.data.data.departmentUsers ||
+    [];
+
+  return {
+    profile: profileResponse.data.data,
+    departments,
+  };
+};
+
+const generateStrategyAdvice = async (token, message) => {
+  const { profile, departments } = await loadStrategyContext(token);
+  const response = await chatWithModel({
+    messages: buildStrategyMessages({
+      message,
+      profile,
+      departments,
+      mode: "strategy_advice",
+      organizationObjective: "",
+    }),
+  });
+
+  return (
+    response.message?.content?.trim() ||
+    "I can help design organization OKRs from your business context."
+  );
+};
+
+const generateDepartmentAlignment = async (
+  token,
+  message,
+  organizationObjective
+) => {
+  const { profile, departments } = await loadStrategyContext(token);
+  const response = await chatWithModel({
+    messages: buildStrategyMessages({
+      message,
+      profile,
+      departments,
+      mode: "department_alignment",
+      organizationObjective,
+    }),
+  });
+
+  return (
+    response.message?.content?.trim() ||
+    "I can help map department objectives from your organization objective."
+  );
+};
+
 const runAgent = async ({ message, session, history }) => {
   const plannerResponse = await chatWithModel({
     messages: buildPlannerMessages({ message, session, history }),
@@ -436,27 +490,14 @@ const runAgent = async ({ message, session, history }) => {
   }
 
   if (plan.action === "strategy_advice" || plan.action === "department_alignment") {
-    const profileResponse = await getCurrentOrganizationProfile(session.token);
-    const departmentResponse = await getDepartments(session.token);
-    const departments =
-      departmentResponse.data.data.departments ||
-      departmentResponse.data.data.departmentUsers ||
-      [];
-
-    const strategyResponse = await chatWithModel({
-      messages: buildStrategyMessages({
-        message,
-        profile: profileResponse.data.data,
-        departments,
-        mode: plan.action,
-        organizationObjective: plan.organizationObjective || plan.reply,
-      }),
-    });
-
     return {
-      text:
-        strategyResponse.message?.content?.trim() ||
-        "I can help design organization and department OKRs from your business goals.",
+      text: plan.action === "strategy_advice"
+        ? await generateStrategyAdvice(session.token, message)
+        : await generateDepartmentAlignment(
+            session.token,
+            message,
+            plan.organizationObjective || plan.reply
+          ),
     };
   }
 
@@ -476,4 +517,6 @@ const runAgent = async ({ message, session, history }) => {
 module.exports = {
   runAgent,
   HELP_TEXT,
+  generateStrategyAdvice,
+  generateDepartmentAlignment,
 };

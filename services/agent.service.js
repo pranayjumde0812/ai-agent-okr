@@ -1,5 +1,10 @@
 const { chatWithModel } = require("./ollama.service");
-const { createObjective, getObjectives } = require("./objective.service");
+const {
+  createObjective,
+  getObjectives,
+  createKeyResult,
+  updateObjectiveProgress,
+} = require("./objective.service");
 const { getCurrentOrganizationProfile } = require("./auth.service");
 const { getDepartments } = require("./department.service");
 const config = require("../config/env");
@@ -15,6 +20,8 @@ You can decide which tool to use based on user intent.
 Rules:
 - Be concise, clear, and action-oriented.
 - If the user asks to create an objective, use the create_objective tool.
+- If the user asks to create a key result, add a KR, or define a measurable result for an objective, use create_key_result.
+- If the user asks to update objective progress, change progress, or set completion percentage, use update_objective_progress.
 - If the user asks to list, show, or fetch objectives, use the get_objectives tool.
 - If the user asks about profile, organization details, company information, mission, or vision, use the get_profile tool.
 - If the user asks about departments, team progress, or department list, use the get_departments tool.
@@ -72,6 +79,8 @@ const HELP_TEXT = [
   "",
   "Examples:",
   '- "Create an objective for improving sales this quarter"',
+  '- "Create a key result for my revenue objective"',
+  '- "Update my onboarding objective progress to 60%"',
   '- "Show my objectives"',
   '- "Get my company profile"',
   '- "List departments and progress"',
@@ -100,11 +109,17 @@ const buildPlannerMessages = ({ message, session, history }) => {
         "",
         "You are an intent planner for this bot.",
         "Return only valid JSON.",
-        "Pick one action from: create_objective, get_objectives, get_profile, get_departments, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
+        "Pick one action from: create_objective, create_key_result, update_objective_progress, get_objectives, get_profile, get_departments, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
         "Schema:",
         '{',
         '  "action": "string",',
+        '  "objectiveId": "string",',
         '  "objectiveName": "string",',
+        '  "keyResultName": "string",',
+        '  "targetValue": "string",',
+        '  "startValue": "string",',
+        '  "currentValue": "string",',
+        '  "progressValue": "string",',
         '  "description": "string",',
         '  "organizationObjective": "string",',
         '  "reply": "string"',
@@ -112,6 +127,7 @@ const buildPlannerMessages = ({ message, session, history }) => {
         'Use empty strings when a field is not needed.',
         'If the user is asking for help or greeting, use send_help or general_reply.',
         'If objective creation is requested but the title is unclear, use ask_clarification.',
+        'If create_key_result or update_objective_progress is requested and the objective is unclear, use ask_clarification.',
         'Use strategy_advice for broad OKR/business-growth guidance.',
         'Use department_alignment when the user wants department objectives or department-wise breakdown from a company/organization objective.',
       ].join("\n"),
@@ -151,6 +167,64 @@ const executeAction = async ({ plan, session }) => {
         success: true,
         action: "create_objective",
         summary: `Objective "${plan.objectiveName}" created successfully.`,
+      };
+    }
+
+    case "create_key_result": {
+      const objective = await findObjective(session.token, plan);
+
+      if (!objective) {
+        return {
+          success: false,
+          action: "create_key_result",
+          summary:
+            "I could not match that objective. Please send the exact objective name first.",
+        };
+      }
+
+      const objectiveIdentifier =
+        objective.id || objective._id || objective.objectiveId;
+
+      await createKeyResult(session.token, {
+        objectiveId: objectiveIdentifier,
+        keyResultName: plan.keyResultName,
+        description: plan.description || "",
+        startValue: plan.startValue || "0",
+        currentValue: plan.currentValue || plan.startValue || "0",
+        targetValue: plan.targetValue || "100",
+      });
+
+      return {
+        success: true,
+        action: "create_key_result",
+        summary: `Key result "${plan.keyResultName}" created for objective "${objective.objectiveName}".`,
+      };
+    }
+
+    case "update_objective_progress": {
+      const objective = await findObjective(session.token, plan);
+
+      if (!objective) {
+        return {
+          success: false,
+          action: "update_objective_progress",
+          summary:
+            "I could not match that objective. Please send the exact objective name first.",
+        };
+      }
+
+      const objectiveIdentifier =
+        objective.id || objective._id || objective.objectiveId;
+
+      await updateObjectiveProgress(session.token, {
+        objectiveId: objectiveIdentifier,
+        progress: Number(plan.progressValue),
+      });
+
+      return {
+        success: true,
+        action: "update_objective_progress",
+        summary: `Objective "${objective.objectiveName}" progress updated to ${plan.progressValue}%.`,
       };
     }
 
@@ -205,11 +279,55 @@ const executeAction = async ({ plan, session }) => {
 const normalizePlan = (plan) => {
   return {
     action: plan.action || "general_reply",
+    objectiveId: plan.objectiveId || "",
     objectiveName: plan.objectiveName || "",
+    keyResultName: plan.keyResultName || "",
+    targetValue: plan.targetValue || "",
+    startValue: plan.startValue || "",
+    currentValue: plan.currentValue || "",
+    progressValue: plan.progressValue || "",
     description: plan.description || "",
     organizationObjective: plan.organizationObjective || "",
     reply: plan.reply || "",
   };
+};
+
+const findObjective = async (token, plan) => {
+  const response = await getObjectives(token);
+  const objectives = response.data.data.objectives || [];
+
+  if (plan.objectiveId) {
+    const byId = objectives.find((objective) => {
+      const id = objective.id || objective._id || objective.objectiveId;
+      return String(id) === String(plan.objectiveId);
+    });
+
+    if (byId) {
+      return byId;
+    }
+  }
+
+  if (!plan.objectiveName) {
+    return null;
+  }
+
+  const normalizedName = plan.objectiveName.trim().toLowerCase();
+
+  return (
+    objectives.find((objective) => {
+      return (
+        objective.objectiveName &&
+        objective.objectiveName.trim().toLowerCase() === normalizedName
+      );
+    }) ||
+    objectives.find((objective) => {
+      return (
+        objective.objectiveName &&
+        objective.objectiveName.trim().toLowerCase().includes(normalizedName)
+      );
+    }) ||
+    null
+  );
 };
 
 const buildStrategyMessages = ({ message, profile, departments, mode, organizationObjective }) => {

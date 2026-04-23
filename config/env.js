@@ -63,7 +63,14 @@ const config = {
   apiBaseUrl: process.env.API_BASE_URL || "http://127.0.0.1:3000/v1",
   telegramBotToken: getRequiredValue("TELEGRAM_BOT_TOKEN"),
   ollamaBaseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434",
-  ollamaModel: process.env.OLLAMA_MODEL || "openclaw:cloud",
+  ollamaModel: process.env.OLLAMA_MODEL || "gpt-oss:20b-cloud",
+  sessionStorePath:
+    process.env.SESSION_STORE_PATH ||
+    path.join(__dirname, "..", ".data", "sessions.json"),
+  sessionTtlHours: Number(process.env.SESSION_TTL_HOURS || 168),
+  keyResultApiPath: process.env.KEY_RESULT_API_PATH || "/key-result",
+  objectiveProgressApiPath:
+    process.env.OBJECTIVE_PROGRESS_API_PATH || "/objective/progress",
 };
 
 module.exports = config;

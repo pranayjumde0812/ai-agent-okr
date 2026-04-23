@@ -1,12 +1,20 @@
 const axios = require("axios");
 const config = require("../config/env");
 
+const normalizeTelegramText = (text) => {
+  return String(text || "")
+    .replace(/\*\*/g, "")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+};
+
 const sendMessage = async (chatId, text) => {
   await axios.post(
     `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
     {
       chat_id: chatId,
-      text,
+      text: normalizeTelegramText(text),
     }
   );
 };
@@ -39,4 +47,5 @@ module.exports = {
   sendMessage,
   sendMenu,
   sendHelpMessage,
+  normalizeTelegramText,
 };

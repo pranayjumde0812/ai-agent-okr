@@ -32,7 +32,8 @@ Handled in [controllers/ai.controller.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-age
 
 - If the user sends an email address, the bot sends OTP.
 - If the user sends the OTP, the bot verifies it.
-- The access token is stored in memory in [utils/session.store.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/utils/session.store.js:1).
+- The access token and chat history are stored in [utils/session.store.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/utils/session.store.js:1).
+- Sessions are persisted to disk, so restart no longer logs every user out immediately.
 
 ### 3. AI agent takes over
 
@@ -53,6 +54,8 @@ The agent:
 The agent can currently use these tools:
 
 - `create_objective`
+- `create_key_result`
+- `update_objective_progress`
 - `get_objectives`
 - `get_profile`
 - `get_departments`
@@ -101,6 +104,8 @@ Examples:
 user: show my objectives
 user: list all my current okrs
 user: create an objective for improving customer retention this quarter
+user: create a key result for my revenue objective
+user: update my onboarding objective progress to 60%
 user: show my organization profile
 user: list departments with progress
 user: suggest company objectives to grow my business
@@ -126,7 +131,11 @@ PORT=6000
 API_BASE_URL=http://127.0.0.1:3000/v1
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=openclaw:cloud
+OLLAMA_MODEL=gpt-oss:20b-cloud
+SESSION_STORE_PATH=.data/sessions.json
+SESSION_TTL_HOURS=168
+KEY_RESULT_API_PATH=/key-result
+OBJECTIVE_PROGRESS_API_PATH=/objective/progress
 ```
 
 ### Step 3. Configure Telegram webhook
@@ -139,6 +148,14 @@ http://your-server-url/ai
 
 If you are using a reverse proxy or public tunnel, use that public URL.
 
+Health endpoint:
+
+```text
+GET /health
+```
+
+This returns backend reachability, Ollama reachability, configured model availability, and session-store stats.
+
 ### Step 4. Talk to the bot in Telegram
 
 Suggested first test:
@@ -149,6 +166,8 @@ your-email@example.com
 123456
 show my profile
 create an objective for improving sales this quarter
+create a key result for my sales objective with target 25%
+update my sales objective progress to 40%
 ```
 
 ## Behavior design
@@ -170,10 +189,9 @@ So the architecture is:
 
 ## Current limitations
 
-- Session storage is in-memory only. If the server restarts, login sessions are lost.
-- Conversation history is also in-memory.
 - Ollama must be running locally or on the configured host.
-- If backend APIs change response shape, the tool formatters may need updates.
+- If backend APIs change response shape, the tool formatters or write payloads may need updates.
+- The key-result and progress-write endpoints are configurable because backend route shapes can differ by project.
 - The current agent does not browse the internet yet. It can reason and suggest based on the model, but online research needs a dedicated search tool or external research API.
 
 ## Files involved
@@ -182,6 +200,7 @@ So the architecture is:
 - [routes/ai.routes.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/routes/ai.routes.js:1): `/ai` route
 - [controllers/ai.controller.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/controllers/ai.controller.js:1): webhook controller and auth gating
 - [services/agent.service.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/services/agent.service.js:1): Ollama-based planning and action flow
+- [services/health.service.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/services/health.service.js:1): backend and Ollama readiness checks
 - [services/ollama.service.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/services/ollama.service.js:1): Ollama client
 - [utils/session.store.js](/home/admin1/PROJECTS-QQ/OKR-AI/ai-agent-okr/utils/session.store.js:1): session and chat history
 
@@ -196,10 +215,10 @@ To add more agent skills:
 
 Examples of future tools:
 
-- create key result
 - get dashboards
-- update objective progress
 - fetch team performance summary
+- create initiatives
+- update key result progress
 
 ## Strategic advice flow
 
@@ -391,5 +410,38 @@ The current bot can already help with:
 - suggesting organization objectives from your business context
 - translating organization objectives into department objectives
 - helping rewrite vague goals into measurable OKRs
+
+## Persistence and health
+
+Sessions now persist on disk and expire based on `SESSION_TTL_HOURS`.
+
+Default behavior:
+
+- session store file: `.data/sessions.json`
+- session TTL: 168 hours
+- store file is ignored by Git
+
+The app also performs startup checks for:
+
+- backend API reachability
+- Ollama API reachability
+- configured Ollama model presence
+
+You can manually inspect readiness with:
+
+```text
+GET /health
+```
+
+## New Telegram prompts
+
+These prompts are now supported:
+
+```text
+create a key result for my revenue objective with target 20%
+add a key result to increase repeat customers for my retention objective
+update my onboarding objective progress to 60%
+set progress of increase sales objective to 45%
+```
 
 If you want full online-research-based strategic recommendations inside Telegram, the next enhancement is to add a research/search tool to the agent.

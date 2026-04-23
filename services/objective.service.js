@@ -1,10 +1,9 @@
 const axios = require("axios");
-
-const BASE_URL = "http://127.0.0.1:3000/v1";
+const config = require("../config/env");
 
 const createObjective = (token, name, description) => {
   return axios.post(
-    `${BASE_URL}/objective`,
+    `${config.apiBaseUrl}/objective`,
     [
       {
         objectiveName: name,
@@ -17,4 +16,10 @@ const createObjective = (token, name, description) => {
   );
 };
 
-module.exports = { createObjective };
+const getObjectives = (token) => {
+  return axios.get(`${config.apiBaseUrl}/objective`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+};
+
+module.exports = { createObjective, getObjectives };

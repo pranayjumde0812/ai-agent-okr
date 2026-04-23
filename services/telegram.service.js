@@ -1,10 +1,9 @@
 const axios = require("axios");
-
-const BOT_TOKEN = "bot8679641024:AAG3D2LqDrGFSUk013uPZfJVy3Frye8h0Dc";
+const config = require("../config/env");
 
 const sendMessage = async (chatId, text) => {
   await axios.post(
-    `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+    `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
     {
       chat_id: chatId,
       text,
@@ -14,7 +13,7 @@ const sendMessage = async (chatId, text) => {
 
 const sendMenu = async (chatId) => {
   await axios.post(
-    `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+    `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
     {
       chat_id: chatId,
       text: "Choose an option:",
@@ -29,7 +28,15 @@ const sendMenu = async (chatId) => {
   );
 };
 
+const sendHelpMessage = async (chatId) => {
+  await sendMessage(
+    chatId,
+    "💡 Commands:\n\n1. Send email to login\n2. Enter OTP\n3. create objective: Name | Description\n4. get objectives\n5. get profile\n6. get departments"
+  );
+};
+
 module.exports = {
   sendMessage,
   sendMenu,
+  sendHelpMessage,
 };

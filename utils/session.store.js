@@ -11,20 +11,16 @@ const getSession = (userId) => {
   return sessions[userId];
 };
 
+const clearStep = (userId) => {
+  if (!sessions[userId]) {
+    return;
+  }
+
+  delete sessions[userId].step;
+};
+
 module.exports = {
   setSession,
   getSession,
+  clearStep,
 };
-
-
-// const sessions = {};
-
-// module.exports = {
-//   getSession: (userId) => sessions[userId],
-//   setSession: (userId, data) => {
-//     sessions[userId] = { ...sessions[userId], ...data };
-//   },
-//   clearStep: (userId) => {
-//     if (sessions[userId]) sessions[userId].step = null;
-//   },
-// };

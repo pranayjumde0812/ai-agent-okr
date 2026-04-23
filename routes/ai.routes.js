@@ -3,6 +3,6 @@ const { handleAI } = require("../controllers/ai.controller");
 
 const router = express.Router();
 
-router.post("/ai", handleAI);
+router.post("/", handleAI);
 
 module.exports = router;

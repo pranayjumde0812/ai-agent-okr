@@ -62,6 +62,8 @@ const config = {
   port: Number(process.env.PORT || 6000),
   apiBaseUrl: process.env.API_BASE_URL || "http://127.0.0.1:3000/v1",
   telegramBotToken: getRequiredValue("TELEGRAM_BOT_TOKEN"),
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434",
+  ollamaModel: process.env.OLLAMA_MODEL || "openclaw:cloud",
 };
 
 module.exports = config;

@@ -12,6 +12,18 @@ exports.verifyOtp = async (email, otp) => {
   });
 };
 
+exports.signOut = async (token) => {
+  return axios.post(
+    `${config.apiBaseUrl}/auth/sign-out`,
+    {},
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+};
+
 exports.getCurrentOrganizationProfile = async (token) => {
   return axios.get(`${config.apiBaseUrl}/organization/current-organization`, {
     headers: {

@@ -2,6 +2,7 @@ const {
   sendOtp,
   verifyOtp,
   getCurrentOrganizationProfile,
+  signOut,
 } = require("../services/auth.service");
 const {
   createObjective,
@@ -285,13 +286,35 @@ const departmentAlignmentTool = async (req, res) => {
 
 const logoutTool = async (req, res) => {
   const userId = getSessionUserId(req);
+  const token = getTokenFromRequest(req);
 
-  if (!userId) {
-    return res.status(400).json({ error: "userId or telegramUserId is required" });
+  if (!userId && !token) {
+    return res.status(400).json({
+      error:
+        "Provide Authorization: Bearer <token> or a userId/telegramUserId with a stored session.",
+    });
   }
 
-  sessionStore.clearSession(userId);
-  return res.json({ ok: true, message: "Session cleared" });
+  try {
+    if (token) {
+      await signOut(token);
+    }
+  } catch (error) {
+    if (!isAuthExpiredError(error)) {
+      return safeError(res, error, "Failed to sign out", userId);
+    }
+  }
+
+  if (userId) {
+    sessionStore.clearSession(userId);
+  }
+
+  return res.json({
+    ok: true,
+    message: "Logged out successfully",
+    backendSignOutCalled: Boolean(token),
+    sessionCleared: Boolean(userId),
+  });
 };
 
 const capabilitiesTool = async (req, res) => {

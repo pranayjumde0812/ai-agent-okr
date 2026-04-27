@@ -1,6 +1,7 @@
 const {
   sendOtp,
   verifyOtp,
+  signOut,
 } = require("../services/auth.service");
 const {
   sendMessage,
@@ -12,6 +13,7 @@ const { isAuthExpiredError } = require("../utils/auth-error");
 const isEmailInput = (text) => text.includes("@");
 const isOtpInput = (text) => !Number.isNaN(Number(text));
 const isHelpInput = (text) => ["/start", "start", "help", "/help"].includes(text.toLowerCase());
+const isLogoutInput = (text) => ["logout", "/logout", "sign out", "signout", "log out"].includes(text.toLowerCase());
 
 const handleAI = async (req, res) => {
   try {
@@ -39,6 +41,30 @@ const handleAI = async (req, res) => {
 
       await sendMessage(telegramUserId, helpMessage);
       sessionStore.appendHistory(telegramUserId, "assistant", helpMessage);
+      return res.sendStatus(200);
+    }
+
+    if (isLogoutInput(text)) {
+      if (!session?.token) {
+        const loggedOutMessage = "You are not logged in right now.";
+        await sendMessage(telegramUserId, loggedOutMessage);
+        sessionStore.appendHistory(telegramUserId, "assistant", loggedOutMessage);
+        return res.sendStatus(200);
+      }
+
+      try {
+        await signOut(session.token);
+      } catch (error) {
+        if (!isAuthExpiredError(error)) {
+          throw error;
+        }
+      }
+
+      sessionStore.clearSession(telegramUserId);
+
+      const logoutMessage = "You have been logged out successfully. Send your email address whenever you want to log in again.";
+      await sendMessage(telegramUserId, logoutMessage);
+      sessionStore.appendHistory(telegramUserId, "assistant", logoutMessage);
       return res.sendStatus(200);
     }
 

@@ -15,6 +15,7 @@ const {
   generateDepartmentAlignment,
 } = require("../services/agent.service");
 const sessionStore = require("../utils/session.store");
+const { isAuthExpiredError } = require("../utils/auth-error");
 
 const getTokenFromRequest = (req) => {
   const authHeader = req.headers.authorization || "";
@@ -54,9 +55,15 @@ const requireToken = (req, res) => {
   return token;
 };
 
-const safeError = (res, error, fallbackMessage) => {
+const safeError = (res, error, fallbackMessage, userId = "") => {
+  if (userId && isAuthExpiredError(error)) {
+    sessionStore.clearAuthSession(userId);
+  }
+
   res.status(error?.response?.status || 500).json({
-    error: fallbackMessage,
+    error: isAuthExpiredError(error)
+      ? "Stored login session expired. Log in again to continue."
+      : fallbackMessage,
     details: error?.response?.data || error.message,
   });
 };
@@ -132,7 +139,7 @@ const getProfileTool = async (req, res) => {
     const response = await getCurrentOrganizationProfile(token);
     return res.json({ ok: true, data: response.data.data });
   } catch (error) {
-    return safeError(res, error, "Failed to fetch profile");
+    return safeError(res, error, "Failed to fetch profile", getSessionUserId(req));
   }
 };
 
@@ -144,7 +151,7 @@ const getObjectivesTool = async (req, res) => {
     const response = await getObjectives(token);
     return res.json({ ok: true, data: response.data.data });
   } catch (error) {
-    return safeError(res, error, "Failed to fetch objectives");
+    return safeError(res, error, "Failed to fetch objectives", getSessionUserId(req));
   }
 };
 
@@ -166,7 +173,7 @@ const createObjectiveTool = async (req, res) => {
       data: response.data,
     });
   } catch (error) {
-    return safeError(res, error, "Failed to create objective");
+    return safeError(res, error, "Failed to create objective", getSessionUserId(req));
   }
 };
 
@@ -190,7 +197,7 @@ const createKeyResultTool = async (req, res) => {
       data: response.data,
     });
   } catch (error) {
-    return safeError(res, error, "Failed to create key result");
+    return safeError(res, error, "Failed to create key result", getSessionUserId(req));
   }
 };
 
@@ -218,7 +225,7 @@ const updateObjectiveProgressTool = async (req, res) => {
       data: response.data,
     });
   } catch (error) {
-    return safeError(res, error, "Failed to update objective progress");
+    return safeError(res, error, "Failed to update objective progress", getSessionUserId(req));
   }
 };
 
@@ -230,7 +237,7 @@ const getDepartmentsTool = async (req, res) => {
     const response = await getDepartments(token);
     return res.json({ ok: true, data: response.data.data });
   } catch (error) {
-    return safeError(res, error, "Failed to fetch departments");
+    return safeError(res, error, "Failed to fetch departments", getSessionUserId(req));
   }
 };
 
@@ -248,7 +255,7 @@ const strategyAdviceTool = async (req, res) => {
     const text = await generateStrategyAdvice(token, prompt);
     return res.json({ ok: true, text });
   } catch (error) {
-    return safeError(res, error, "Failed to generate strategy advice");
+    return safeError(res, error, "Failed to generate strategy advice", getSessionUserId(req));
   }
 };
 
@@ -272,7 +279,7 @@ const departmentAlignmentTool = async (req, res) => {
     );
     return res.json({ ok: true, text });
   } catch (error) {
-    return safeError(res, error, "Failed to generate department alignment");
+    return safeError(res, error, "Failed to generate department alignment", getSessionUserId(req));
   }
 };
 

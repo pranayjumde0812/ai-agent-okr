@@ -7,6 +7,7 @@ const {
 } = require("../services/telegram.service");
 const { runAgent, HELP_TEXT } = require("../services/agent.service");
 const sessionStore = require("../utils/session.store");
+const { isAuthExpiredError } = require("../utils/auth-error");
 
 const isEmailInput = (text) => text.includes("@");
 const isOtpInput = (text) => !Number.isNaN(Number(text));
@@ -136,10 +137,15 @@ const handleAI = async (req, res) => {
   } catch (error) {
     console.error("AI CONTROLLER ERROR:", error?.response?.data || error.message);
     const telegramUserId = req.body.message?.from?.id;
-    const fallbackMessage =
-      error.code === "ECONNREFUSED"
+    const fallbackMessage = isAuthExpiredError(error)
+      ? "Your login session expired. Please send your email address to log in again."
+      : error.code === "ECONNREFUSED"
         ? "⚠️ Ollama is not reachable. Start Ollama and confirm OLLAMA_BASE_URL is correct."
         : "⚠️ Something went wrong. Please try again.";
+
+    if (telegramUserId && isAuthExpiredError(error)) {
+      sessionStore.clearAuthSession(telegramUserId);
+    }
 
     await sendMessage(telegramUserId, fallbackMessage);
 

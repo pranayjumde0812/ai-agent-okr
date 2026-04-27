@@ -123,6 +123,18 @@ const clearSession = (userId) => {
   persistSessions();
 };
 
+const clearAuthSession = (userId) => {
+  if (!sessions[userId]) {
+    return;
+  }
+
+  delete sessions[userId].token;
+  delete sessions[userId].organizationId;
+  delete sessions[userId].role;
+  touchSession(userId);
+  persistSessions();
+};
+
 const getSessionStats = () => {
   pruneExpiredSessions();
 
@@ -142,5 +154,6 @@ module.exports = {
   appendHistory,
   getHistory,
   clearSession,
+  clearAuthSession,
   getSessionStats,
 };

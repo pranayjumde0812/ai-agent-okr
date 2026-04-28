@@ -14,6 +14,7 @@ const createDepartmentObjective = (token, payload) => {
     `${config.apiBaseUrl}/department-objective/add-department-objective`,
     {
       organizationObjectiveId: payload.organizationObjectiveId,
+      ...(payload.departmentId ? { departmentId: payload.departmentId } : {}),
       departmentObjective: payload.departmentObjective,
       description: payload.description || "",
     },

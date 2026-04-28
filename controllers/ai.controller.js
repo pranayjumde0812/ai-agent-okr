@@ -4,6 +4,8 @@ const {
   signOut,
 } = require("../services/auth.service");
 const {
+  answerCallbackQuery,
+  clearInlineKeyboard,
   sendMessage,
 } = require("../services/telegram.service");
 const { runAgent, HELP_TEXT } = require("../services/agent.service");
@@ -15,10 +17,36 @@ const isOtpInput = (text) => !Number.isNaN(Number(text));
 const isHelpInput = (text) => ["/start", "start", "help", "/help"].includes(text.toLowerCase());
 const isLogoutInput = (text) => ["logout", "/logout", "sign out", "signout", "log out"].includes(text.toLowerCase());
 
+const getFriendlyErrorMessage = (error) => {
+  const backendMessage = error?.response?.data?.message;
+
+  if (typeof backendMessage === "string") {
+    if (backendMessage.includes("already exists")) {
+      return `That department objective already exists.`;
+    }
+
+    if (backendMessage.includes("Department not found")) {
+      return "I could not find the selected department. Please choose the department again.";
+    }
+
+    return backendMessage;
+  }
+
+  if (error.code === "ECONNREFUSED") {
+    return "⚠️ Ollama is not reachable. Start Ollama and confirm OLLAMA_BASE_URL is correct.";
+  }
+
+  return "⚠️ Something went wrong. Please try again.";
+};
+
 const handleAI = async (req, res) => {
   try {
-    const text = req.body.message?.text?.trim();
-    const telegramUserId = req.body.message?.from?.id;
+    const callbackData = req.body.callback_query?.data?.trim();
+    const callbackQueryId = req.body.callback_query?.id;
+    const callbackMessageId = req.body.callback_query?.message?.message_id;
+    const text = req.body.message?.text?.trim() || callbackData;
+    const telegramUserId = req.body.message?.from?.id || req.body.callback_query?.from?.id;
+    const telegramChatId = req.body.message?.chat?.id || req.body.callback_query?.message?.chat?.id || telegramUserId;
 
     if (!text || !telegramUserId) {
       return res.sendStatus(200);
@@ -171,23 +199,43 @@ const handleAI = async (req, res) => {
       });
     }
 
-    await sendMessage(telegramUserId, agentResult.text);
+    if (callbackQueryId) {
+      await answerCallbackQuery(callbackQueryId);
+    }
+
+    if (callbackQueryId && callbackMessageId && agentResult.clearSourceReplyMarkup) {
+      await clearInlineKeyboard(telegramChatId, callbackMessageId);
+    }
+
+    if (agentResult.sessionUpdates) {
+      sessionStore.setSession(telegramUserId, agentResult.sessionUpdates);
+    }
+
+    await sendMessage(telegramChatId, agentResult.text, {
+      ...(agentResult.replyMarkup
+        ? { reply_markup: agentResult.replyMarkup }
+        : {}),
+    });
     sessionStore.appendHistory(telegramUserId, "assistant", agentResult.text);
     return res.sendStatus(200);
   } catch (error) {
     console.error("AI CONTROLLER ERROR:", error?.response?.data || error.message);
-    const telegramUserId = req.body.message?.from?.id;
+    const callbackQueryId = req.body.callback_query?.id;
+    const telegramUserId = req.body.message?.from?.id || req.body.callback_query?.from?.id;
+    const telegramChatId = req.body.message?.chat?.id || req.body.callback_query?.message?.chat?.id || telegramUserId;
     const fallbackMessage = isAuthExpiredError(error)
       ? "Your login session expired. Please send your email address to log in again."
-      : error.code === "ECONNREFUSED"
-        ? "⚠️ Ollama is not reachable. Start Ollama and confirm OLLAMA_BASE_URL is correct."
-        : "⚠️ Something went wrong. Please try again.";
+      : getFriendlyErrorMessage(error);
 
     if (telegramUserId && isAuthExpiredError(error)) {
       sessionStore.clearAuthSession(telegramUserId);
     }
 
-    await sendMessage(telegramUserId, fallbackMessage);
+    if (callbackQueryId) {
+      await answerCallbackQuery(callbackQueryId, "Something went wrong");
+    }
+
+    await sendMessage(telegramChatId, fallbackMessage);
 
     if (telegramUserId) {
       sessionStore.appendHistory(telegramUserId, "assistant", fallbackMessage);

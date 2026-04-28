@@ -259,6 +259,205 @@ const extractSuggestedObjectiveSelection = ({
   };
 };
 
+const buildReplyKeyboard = (rows) => ({
+  keyboard: rows.map((row) => row.map((text) => ({ text }))),
+  resize_keyboard: true,
+  one_time_keyboard: false,
+});
+
+const shortenButtonLabel = (text, maxLength = 28) => {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength - 1).trim()}...`;
+};
+
+const getObjectiveDisplayName = (objective) => {
+  return (
+    objective?.objectiveName ||
+    objective?.objective ||
+    objective?.departmentObjective ||
+    "Objective"
+  );
+};
+
+const buildObjectiveActionLabel = (prefix, objective) => {
+  return `${prefix}: ${shortenButtonLabel(getObjectiveDisplayName(objective))}`;
+};
+
+const CALLBACK_PREFIX = "cb";
+
+const buildCallbackData = (...parts) => {
+  return [CALLBACK_PREFIX, ...parts].join(":");
+};
+
+const parseCallbackData = (message) => {
+  const normalized = String(message || "").trim();
+
+  if (!normalized.startsWith(`${CALLBACK_PREFIX}:`)) {
+    return null;
+  }
+
+  const [, action, ...args] = normalized.split(":");
+
+  if (!action || !args.length) {
+    return null;
+  }
+
+  return { action, args };
+};
+
+const buildInlineObjectiveSelectionKeyboard = (objectives = [], action) => ({
+  inline_keyboard: objectives.map((objective) => [
+    {
+      text: shortenButtonLabel(getObjectiveDisplayName(objective), 40),
+      callback_data: buildCallbackData(
+        action,
+        objective.id || objective._id || objective.objectiveId
+      ),
+    },
+  ]),
+});
+
+const getDepartmentDisplayName = (department) => {
+  return (
+    department?.departmentName ||
+    department?.fullName ||
+    department?.name ||
+    "Department"
+  );
+};
+
+const buildInlineDepartmentSelectionKeyboard = (departments = []) => ({
+  inline_keyboard: departments.map((department, index) => [
+    {
+      text: shortenButtonLabel(getDepartmentDisplayName(department), 40),
+      callback_data: buildCallbackData("select_dept_for_org", String(index)),
+    },
+  ]),
+});
+
+const buildInlineDepartmentObjectiveCreateKeyboard = (
+  departmentName,
+  departmentObjectives = []
+) => {
+  const rows = departmentObjectives.map((item, index) => [
+    {
+      text: shortenButtonLabel(
+        `Create ${departmentName}: ${item.departmentObjective}`,
+        55
+      ),
+      callback_data: buildCallbackData("create_suggested_dept_obj", String(index)),
+    },
+  ]);
+
+  if (departmentObjectives.length > 1) {
+    rows.push([
+      {
+        text: shortenButtonLabel(`Create All for ${departmentName}`, 55),
+        callback_data: buildCallbackData("create_all_suggested_dept_obj", "all"),
+      },
+    ]);
+  }
+
+  rows.push([
+    {
+      text: "Close",
+      callback_data: buildCallbackData("close_suggested_dept_obj_flow", "close"),
+    },
+  ]);
+
+  return { inline_keyboard: rows };
+};
+
+const buildSuggestedObjectiveKeyboard = (objectives = []) => {
+  const rows = objectives.map((objective) => [
+    buildObjectiveActionLabel("Create", objective),
+    buildObjectiveActionLabel("Dept", objective),
+  ]);
+
+  if (objectives.length > 1) {
+    rows.push(["Create All"]);
+  }
+
+  rows.push(["Show Objectives", "Help"]);
+
+  return buildReplyKeyboard(rows);
+};
+
+const buildObjectiveListKeyboard = (objectives = []) => {
+  const rows = objectives.map((objective) => [
+    buildObjectiveActionLabel("Dept", objective),
+    buildObjectiveActionLabel("KR", objective),
+  ]);
+
+  rows.push(["Show Objectives", "Help"]);
+
+  return buildReplyKeyboard(rows);
+};
+
+const isDepartmentObjectiveIntentMessage = (message) => {
+  const normalized = String(message || "").trim().toLowerCase();
+
+  return (
+    normalized.includes("department objective") ||
+    normalized.includes("department-wise") ||
+    normalized.includes("departmentwise")
+  );
+};
+
+const matchObjectiveFromMessage = (message, objectives = []) => {
+  const normalized = String(message || "").trim().toLowerCase();
+
+  if (!normalized || !objectives.length) {
+    return null;
+  }
+
+  const indexes = extractSelectionIndexes(normalized, objectives.length);
+
+  if (indexes.length) {
+    return objectives[indexes[0] - 1] || null;
+  }
+
+  return objectives.find((objective) => {
+    const name = getObjectiveDisplayName(objective).toLowerCase();
+    return normalized.includes(name) || name.includes(normalized.replace(/^(create|dept|kr)\s*:\s*/i, "").trim());
+  }) || null;
+};
+
+const extractDepartmentObjectiveSelection = (message, objectives = []) => {
+  const normalized = String(message || "").trim().toLowerCase();
+
+  if (!normalized.includes("dept")) {
+    return null;
+  }
+
+  return matchObjectiveFromMessage(message, objectives);
+};
+
+const extractKeyResultObjectiveSelection = (message, objectives = []) => {
+  const normalized = String(message || "").trim().toLowerCase();
+
+  if (!normalized.includes("kr")) {
+    return null;
+  }
+
+  return matchObjectiveFromMessage(message, objectives);
+};
+
+const extractCreateObjectiveSelection = (message, objectives = []) => {
+  const normalized = String(message || "").trim().toLowerCase();
+
+  if (!normalized.startsWith("create:")) {
+    return null;
+  }
+
+  return matchObjectiveFromMessage(message, objectives);
+};
+
 const buildConversationContext = (history = []) => {
   const trimmedHistory = history.slice(-MAX_HISTORY_ITEMS);
 
@@ -442,6 +641,24 @@ const normalizeStructuredStrategyPlan = (plan) => {
     .slice(0, 5);
 };
 
+const normalizeStructuredDepartmentPlan = (plan) => {
+  const items = Array.isArray(plan?.departmentObjectives)
+    ? plan.departmentObjectives
+    : [];
+
+  return items
+    .map((item, index) => ({
+      id: `d${index + 1}`,
+      departmentObjective: String(
+        item?.departmentObjective || item?.objectiveName || ""
+      ).trim(),
+      description: String(item?.description || "").trim(),
+      keyResults: normalizeKeyResultItems(item?.keyResults),
+    }))
+    .filter((item) => item.departmentObjective)
+    .slice(0, 5);
+};
+
 const buildStructuredStrategyMessages = ({
   message,
   profile,
@@ -526,6 +743,67 @@ const generateStructuredStrategyPlan = async (token, message) => {
   };
 };
 
+const generateStructuredDepartmentPlan = async (
+  token,
+  organizationObjective,
+  departmentName
+) => {
+  const { profile, departments } = await loadStrategyContext(token);
+  const response = await chatWithModel({
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are an OKR department objective planner.",
+          "Return only valid JSON.",
+          "Propose exactly 3 department objectives for the selected department under the given organization objective.",
+          "Each department objective must be actionable and independently creatable in an OKR system.",
+          "Descriptions must be one sentence and outcome-focused.",
+          "Each department objective must include 2-4 outcome-focused key results.",
+          "Do not include markdown or extra text outside JSON.",
+          "Schema:",
+          '{',
+          '  "departmentObjectives": [',
+          '    {',
+          '      "departmentObjective": "string",',
+          '      "description": "string",',
+          '      "keyResults": ["string"]',
+          '    }',
+          '  ]',
+          '}',
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `Organization objective: ${organizationObjective}`,
+          `Target department: ${departmentName}`,
+          "",
+          "Organization profile:",
+          [
+            `Company: ${profile?.companyName || "-"}`,
+            `Organization name: ${profile?.fullName || "-"}`,
+            `About: ${profile?.aboutCompany || "-"}`,
+            `Mission: ${profile?.companyMission || "-"}`,
+            `Vision: ${profile?.companyVision || "-"}`,
+          ].join("\n"),
+          "",
+          "Known departments:",
+          departments
+            .map((department, index) => {
+              return `${index + 1}. ${department.departmentName || "-"} (${department.fullName || "No owner"})`;
+            })
+            .join("\n"),
+        ].join("\n"),
+      },
+    ],
+    format: "json",
+  });
+
+  const parsed = parseJson(response.message?.content || "{}");
+  return normalizeStructuredDepartmentPlan(parsed);
+};
+
 const formatStructuredStrategyAdvice = ({
   organizationObjectives,
   departments,
@@ -571,6 +849,44 @@ const formatStructuredStrategyAdvice = ({
   return lines.join("\n");
 };
 
+const formatStructuredDepartmentAdvice = ({
+  organizationObjective,
+  departmentName,
+  departmentObjectives,
+}) => {
+  if (!departmentObjectives.length) {
+    return `I could not generate department objectives for ${departmentName} right now.`;
+  }
+
+  const lines = [
+    `Selected organization objective: ${organizationObjective}`,
+    `Selected department: ${departmentName}`,
+    "",
+    `Suggested Department Objectives for ${departmentName}:`,
+    ...departmentObjectives.map((item, index) => (
+      `${index + 1}. ${item.departmentObjective} - ${item.description || "No description"}`
+    )),
+    "",
+    "Key Results:",
+  ];
+
+  departmentObjectives.forEach((item, index) => {
+    lines.push(`${index + 1}. ${item.departmentObjective}`);
+    if (item.keyResults.length) {
+      item.keyResults.forEach((keyResult, keyResultIndex) => {
+        lines.push(`   ${keyResultIndex + 1}. ${keyResult}`);
+      });
+    } else {
+      lines.push("   1. Define measurable outcome targets for this department objective.");
+    }
+  });
+
+  lines.push("");
+  lines.push("Use the buttons below to create one or all of these department objectives.");
+
+  return lines.join("\n");
+};
+
 const formatSuggestedObjectives = (objectives = []) => {
   if (!objectives.length) {
     return "";
@@ -588,6 +904,54 @@ const formatSuggestedObjectives = (objectives = []) => {
     "",
     "Reply with 'create all' to create all of them, or 'create 1,3' to create selected ones.",
   ].join("\n");
+};
+
+const getObjectiveByIndex = async (token, index) => {
+  const response = await getObjectives(token);
+  const objectives = response.data.data.objectives || [];
+
+  if (!index || index < 1 || index > objectives.length) {
+    return null;
+  }
+
+  return objectives[index - 1] || null;
+};
+
+const getObjectiveById = async (token, objectiveId) => {
+  const response = await getObjectives(token);
+  const objectives = response.data.data.objectives || [];
+
+  return (
+    objectives.find((objective) => {
+      const id = objective.id || objective._id || objective.objectiveId;
+      return String(id) === String(objectiveId);
+    }) || null
+  );
+};
+
+const getDepartmentById = async (token, departmentId) => {
+  const response = await getDepartments(token);
+  const departments =
+    response.data.data.departments || response.data.data.departmentUsers || [];
+
+  return (
+    departments.find((department) => {
+      const id = department.id || department._id || department.departmentId;
+      return String(id) === String(departmentId);
+    }) || null
+  );
+};
+
+const buildDepartmentSessionOptions = (departments = []) => {
+  return departments
+    .map((department, index) => ({
+      index,
+      id: String(
+        department.id || department._id || department.departmentId || ""
+      ).trim(),
+      name: getDepartmentDisplayName(department),
+    }))
+    .filter((department) => department.id);
 };
 
 const normalizeObjectiveItems = (plan) => {
@@ -629,6 +993,7 @@ const normalizeDepartmentObjectiveItems = (plan) => {
         item?.departmentObjective || item?.objectiveName || ""
       ).trim(),
       description: String(item?.description || "").trim(),
+      departmentId: String(item?.departmentId || "").trim(),
       organizationObjectiveId: String(item?.organizationObjectiveId || "").trim(),
       organizationObjective: String(
         item?.organizationObjective || item?.objectiveName || ""
@@ -650,6 +1015,7 @@ const normalizeDepartmentObjectiveItems = (plan) => {
         plan.departmentObjective || plan.objectiveName || ""
       ).trim(),
       description: String(plan.description || "").trim(),
+      departmentId: String(plan.departmentId || "").trim(),
       organizationObjectiveId: String(plan.organizationObjectiveId || "").trim(),
       organizationObjective: String(plan.organizationObjective || plan.objectiveName || "").trim(),
     },
@@ -763,6 +1129,7 @@ const createBulkObjectives = async ({ plan, session }) => {
 
     await createDepartmentObjective(session.token, {
       organizationObjectiveId,
+      departmentId: item.departmentId || session.selectedDepartmentId || "",
       departmentObjective: item.departmentObjective,
       description: item.description || "",
     });
@@ -946,6 +1313,8 @@ const executeAction = async ({ plan, session }) => {
 
       const response = await createDepartmentObjective(session.token, {
         organizationObjectiveId,
+        departmentId:
+          departmentItem.departmentId || session.selectedDepartmentId || "",
         departmentObjective: departmentItem.departmentObjective,
         description: departmentItem.description || "",
       });
@@ -1245,7 +1614,287 @@ const generateDepartmentAlignment = async (
   );
 };
 
+const generateDepartmentSpecificAlignment = async (
+  token,
+  organizationObjective,
+  departmentName
+) => {
+  const departmentObjectives = await generateStructuredDepartmentPlan(
+    token,
+    organizationObjective,
+    departmentName
+  );
+
+  return {
+    text: formatStructuredDepartmentAdvice({
+      organizationObjective,
+      departmentName,
+      departmentObjectives,
+    }),
+    departmentObjectives,
+  };
+};
+
 const runAgent = async ({ message, session, history }) => {
+  const callbackSelection = parseCallbackData(message);
+
+  if (callbackSelection?.action === "select_org_for_dept") {
+    const [objectiveId] = callbackSelection.args;
+    const selectedObjective = await getObjectiveById(
+      session.token,
+      objectiveId
+    );
+
+    if (!selectedObjective) {
+      return {
+        text: "I could not find that organization objective anymore. Please try again.",
+      };
+    }
+
+    const objectiveName = getObjectiveDisplayName(selectedObjective);
+    const { departments } = await loadStrategyContext(session.token);
+    const departmentOptions = buildDepartmentSessionOptions(departments);
+    const objectiveIdentifier =
+      selectedObjective.id ||
+      selectedObjective._id ||
+      selectedObjective.objectiveId;
+
+    return {
+      text: `Selected organization objective: ${objectiveName}\n\nNow select the department below.`,
+      replyMarkup: buildInlineDepartmentSelectionKeyboard(departments),
+      sessionUpdates: {
+        selectedOrganizationObjectiveId: objectiveIdentifier,
+        selectedOrganizationObjectiveName: objectiveName,
+        selectedDepartmentId: "",
+        selectedDepartmentName: "",
+        pendingDepartmentOptions: departmentOptions,
+        suggestedDepartmentObjectives: [],
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "select_dept_for_org") {
+    const [departmentIndexValue] = callbackSelection.args;
+    const departmentIndex = Number(departmentIndexValue);
+    const selectedObjective = session?.selectedOrganizationObjectiveId
+      ? await getObjectiveById(
+          session.token,
+          session.selectedOrganizationObjectiveId
+        )
+      : null;
+    const selectedDepartmentOption = Array.isArray(session?.pendingDepartmentOptions)
+      ? session.pendingDepartmentOptions[departmentIndex]
+      : null;
+    const selectedDepartment = selectedDepartmentOption?.id
+      ? await getDepartmentById(session.token, selectedDepartmentOption.id)
+      : null;
+
+    if (!selectedObjective || !selectedDepartment) {
+      return {
+        text: "I could not find that objective or department anymore. Please try again.",
+      };
+    }
+
+    const objectiveName = getObjectiveDisplayName(selectedObjective);
+    const departmentName = getDepartmentDisplayName(selectedDepartment);
+    const departmentPlan = await generateDepartmentSpecificAlignment(
+      session.token,
+      objectiveName,
+      departmentName
+    );
+
+    return {
+      text: departmentPlan.text,
+      replyMarkup: buildInlineDepartmentObjectiveCreateKeyboard(
+        departmentName,
+        departmentPlan.departmentObjectives
+      ),
+      sessionUpdates: {
+        selectedOrganizationObjectiveId:
+          selectedObjective.id ||
+          selectedObjective._id ||
+          selectedObjective.objectiveId,
+        selectedOrganizationObjectiveName: objectiveName,
+        selectedDepartmentId:
+          selectedDepartment.id ||
+          selectedDepartment._id ||
+          selectedDepartment.departmentId,
+        selectedDepartmentName: departmentName,
+        pendingDepartmentOptions: [],
+        suggestedDepartmentObjectives: departmentPlan.departmentObjectives,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "create_suggested_dept_obj") {
+    const [indexValue] = callbackSelection.args;
+    const selectedIndex = Number(indexValue);
+    const departmentObjectives = Array.isArray(session?.suggestedDepartmentObjectives)
+      ? session.suggestedDepartmentObjectives
+      : [];
+    const selectedItem = departmentObjectives[selectedIndex];
+
+    if (
+      !selectedItem ||
+      !session?.selectedOrganizationObjectiveId ||
+      !session?.selectedDepartmentId
+    ) {
+      return {
+        text: "I could not find the selected department-objective draft. Please generate department objectives again.",
+      };
+    }
+
+    const response = await createDepartmentObjective(session.token, {
+      organizationObjectiveId: session.selectedOrganizationObjectiveId,
+      departmentId: session.selectedDepartmentId,
+      departmentObjective: selectedItem.departmentObjective,
+      description: selectedItem.description || "",
+    });
+    const remainingDepartmentObjectives = departmentObjectives.filter(
+      (_, index) => index !== selectedIndex
+    );
+
+    return {
+      text: remainingDepartmentObjectives.length
+        ? `Department objective "${selectedItem.departmentObjective}" created successfully for ${session.selectedDepartmentName}.\n\nYou can create the remaining ${remainingDepartmentObjectives.length} suggestion${remainingDepartmentObjectives.length === 1 ? "" : "s"} below, or tap Close to exit this flow.`
+        : `Department objective "${selectedItem.departmentObjective}" created successfully for ${session.selectedDepartmentName}.\n\nAll set. No more draft department objectives are left in this flow.`,
+      data: response.data,
+      clearSourceReplyMarkup: true,
+      ...(remainingDepartmentObjectives.length
+        ? {
+            replyMarkup: buildInlineDepartmentObjectiveCreateKeyboard(
+              session.selectedDepartmentName || "Department",
+              remainingDepartmentObjectives
+            ),
+          }
+        : {}),
+      sessionUpdates: {
+        suggestedDepartmentObjectives: remainingDepartmentObjectives,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "create_all_suggested_dept_obj") {
+    const departmentObjectives = Array.isArray(session?.suggestedDepartmentObjectives)
+      ? session.suggestedDepartmentObjectives
+      : [];
+
+    if (
+      !departmentObjectives.length ||
+      !session?.selectedOrganizationObjectiveId ||
+      !session?.selectedDepartmentId
+    ) {
+      return {
+        text: "I could not find the stored department-objective drafts. Please generate department objectives again.",
+      };
+    }
+
+    for (const item of departmentObjectives) {
+      await createDepartmentObjective(session.token, {
+        organizationObjectiveId: session.selectedOrganizationObjectiveId,
+        departmentId: session.selectedDepartmentId,
+        departmentObjective: item.departmentObjective,
+        description: item.description || "",
+      });
+    }
+
+    return {
+      text: `Created ${departmentObjectives.length} department objectives for ${session.selectedDepartmentName}.\n\nThis department-objective flow is now closed.`,
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        suggestedDepartmentObjectives: [],
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "close_suggested_dept_obj_flow") {
+    return {
+      text: `Closed the department-objective selection flow for ${session?.selectedDepartmentName || "the selected department"}.`,
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        suggestedDepartmentObjectives: [],
+      },
+    };
+  }
+
+  const currentObjectivesResponse = await getObjectives(session.token);
+  const currentObjectives =
+    currentObjectivesResponse.data.data.objectives || [];
+
+  const departmentObjectiveSelection = extractDepartmentObjectiveSelection(
+    message,
+    currentObjectives
+  );
+
+  if (departmentObjectiveSelection) {
+    const objective = departmentObjectiveSelection;
+
+    if (!objective) {
+      return {
+        text: "I could not find that organization objective. Please try again.",
+      };
+    }
+
+    const objectiveName = objective.objectiveName || objective.objective || "";
+    const text = await generateDepartmentAlignment(
+      session.token,
+      `Suggest department-wise objectives for ${objectiveName}`,
+      objectiveName
+    );
+
+    return {
+      text,
+      replyMarkup: buildObjectiveListKeyboard([objective]),
+    };
+  }
+
+  const keyResultObjectiveSelection = extractKeyResultObjectiveSelection(
+    message,
+    currentObjectives
+  );
+
+  if (keyResultObjectiveSelection) {
+    const objective = keyResultObjectiveSelection;
+
+    if (!objective) {
+      return {
+        text: "I could not find that organization objective. Please try again.",
+      };
+    }
+
+    return {
+      text: `Tell me the key result you want to add for objective: ${objective.objectiveName}`,
+    };
+  }
+
+  const createObjectiveSelection = extractCreateObjectiveSelection(
+    message,
+    session?.suggestedOrganizationObjectives || currentObjectives
+  );
+
+  if (createObjectiveSelection) {
+    const toolResult = await executeAction({
+      plan: {
+        action: "create_bulk_objectives",
+        organizationObjectives: [
+          {
+            objectiveName: createObjectiveSelection.objectiveName,
+            description: createObjectiveSelection.description || "",
+          },
+        ],
+      },
+      session,
+    });
+
+    return {
+      text: toolResult.summary || "Done.",
+      suggestedOrganizationObjectives: session?.suggestedOrganizationObjectives || [],
+      replyMarkup: buildSuggestedObjectiveKeyboard(
+        session?.suggestedOrganizationObjectives || []
+      ),
+    };
+  }
+
   const suggestedObjectiveSelection = extractSuggestedObjectiveSelection({
     message,
     suggestedObjectives: session?.suggestedOrganizationObjectives || [],
@@ -1266,6 +1915,9 @@ const runAgent = async ({ message, session, history }) => {
     return {
       text: toolResult.summary || "Done.",
       suggestedOrganizationObjectives: session.suggestedOrganizationObjectives,
+      replyMarkup: buildSuggestedObjectiveKeyboard(
+        session?.suggestedOrganizationObjectives || []
+      ),
     };
   }
 
@@ -1281,6 +1933,16 @@ const runAgent = async ({ message, session, history }) => {
   }
 
   if (plan.action === "ask_clarification") {
+    if (isDepartmentObjectiveIntentMessage(message) && currentObjectives.length) {
+      return {
+        text: "Select the organization objective below for department-wise planning or department objective creation.",
+        replyMarkup: buildInlineObjectiveSelectionKeyboard(
+          currentObjectives,
+          "select_org_for_dept"
+        ),
+      };
+    }
+
     return {
       text:
         plan.reply ||
@@ -1289,6 +1951,16 @@ const runAgent = async ({ message, session, history }) => {
   }
 
   if (plan.action === "general_reply") {
+    if (isDepartmentObjectiveIntentMessage(message) && currentObjectives.length) {
+      return {
+        text: "Select the organization objective below for department-wise planning or department objective creation.",
+        replyMarkup: buildInlineObjectiveSelectionKeyboard(
+          currentObjectives,
+          "select_org_for_dept"
+        ),
+      };
+    }
+
     return {
       text:
         plan.reply ||
@@ -1303,6 +1975,9 @@ const runAgent = async ({ message, session, history }) => {
       return {
         text: strategyAdvice.text,
         suggestedOrganizationObjectives: strategyAdvice.organizationObjectives,
+        replyMarkup: buildSuggestedObjectiveKeyboard(
+          strategyAdvice.organizationObjectives
+        ),
       };
     }
 
@@ -1323,11 +1998,19 @@ const runAgent = async ({ message, session, history }) => {
     messages: buildFinalMessages({ message, plan, toolResult }),
   });
 
+  const replyMarkup = toolResult.action === "get_objectives"
+    ? buildInlineObjectiveSelectionKeyboard(
+        toolResult.objectives || [],
+        "select_org_for_dept"
+      )
+    : undefined;
+
   return {
     text:
       finalResponse.message?.content?.trim() ||
       toolResult.summary ||
       "Done.",
+    ...(replyMarkup ? { replyMarkup } : {}),
   };
 };
 

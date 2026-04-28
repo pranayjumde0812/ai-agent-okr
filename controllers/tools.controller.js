@@ -251,7 +251,7 @@ const createDepartmentObjectiveTool = async (req, res) => {
   const token = requireToken(req, res);
   if (!token) return;
 
-  const { organizationObjectiveId, departmentObjective, description } = req.body;
+  const { organizationObjectiveId, departmentId, departmentObjective, description } = req.body;
 
   if (!organizationObjectiveId || !departmentObjective) {
     return res.status(400).json({
@@ -262,6 +262,7 @@ const createDepartmentObjectiveTool = async (req, res) => {
   try {
     const response = await createDepartmentObjective(token, {
       organizationObjectiveId,
+      departmentId,
       departmentObjective,
       description,
     });

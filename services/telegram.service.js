@@ -9,12 +9,36 @@ const normalizeTelegramText = (text) => {
     .trim();
 };
 
-const sendMessage = async (chatId, text) => {
+const sendMessage = async (chatId, text, options = {}) => {
   await axios.post(
     `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
     {
       chat_id: chatId,
       text: normalizeTelegramText(text),
+      ...(options.reply_markup ? { reply_markup: options.reply_markup } : {}),
+    }
+  );
+};
+
+const answerCallbackQuery = async (callbackQueryId, text = "") => {
+  await axios.post(
+    `https://api.telegram.org/bot${config.telegramBotToken}/answerCallbackQuery`,
+    {
+      callback_query_id: callbackQueryId,
+      ...(text ? { text: normalizeTelegramText(text) } : {}),
+    }
+  );
+};
+
+const clearInlineKeyboard = async (chatId, messageId) => {
+  await axios.post(
+    `https://api.telegram.org/bot${config.telegramBotToken}/editMessageReplyMarkup`,
+    {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: {
+        inline_keyboard: [],
+      },
     }
   );
 };
@@ -44,6 +68,8 @@ const sendHelpMessage = async (chatId) => {
 };
 
 module.exports = {
+  answerCallbackQuery,
+  clearInlineKeyboard,
   sendMessage,
   sendMenu,
   sendHelpMessage,

@@ -160,6 +160,14 @@ const handleAI = async (req, res) => {
     if (Array.isArray(agentResult.suggestedOrganizationObjectives)) {
       sessionStore.setSession(telegramUserId, {
         suggestedOrganizationObjectives: agentResult.suggestedOrganizationObjectives,
+        awaitingSuggestedObjectiveSelection:
+          agentResult.suggestedOrganizationObjectives.length > 0,
+      });
+    }
+
+    if (session?.token && !Array.isArray(agentResult.suggestedOrganizationObjectives)) {
+      sessionStore.setSession(telegramUserId, {
+        awaitingSuggestedObjectiveSelection: false,
       });
     }
 

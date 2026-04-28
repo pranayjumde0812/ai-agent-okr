@@ -107,6 +107,9 @@ const HELP_TEXT = [
   "Examples:",
   '- "Create an objective for improving sales this quarter"',
   '- "Create these organization objectives: Improve retention | Grow revenue, and add department objectives for sales and support"',
+  '- "Suggest company objectives for this quarter"',
+  '- "Create all suggested objectives"',
+  '- "Create objectives 1,3"',
   '- "Create a department objective for the AI team under my Use Of AI Agent objective"',
   '- "Show department objectives"',
   '- "Add a task and key result to my Test 1 department objective"',
@@ -138,6 +141,122 @@ const isCreateSuggestedObjectivesCommand = (message) => {
     normalized.includes("those");
 
   return includesCreate && includesObjective && includesBulkReference;
+};
+
+const isAffirmativeSelectionCommand = (message) => {
+  const normalized = String(message || "").trim().toLowerCase();
+
+  return [
+    "yes",
+    "y",
+    "yes create",
+    "create them",
+    "create it",
+    "go ahead",
+    "proceed",
+    "confirm",
+    "ok create",
+    "okay create",
+  ].includes(normalized);
+};
+
+const ORDINAL_WORD_TO_INDEX = {
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+};
+
+const extractSelectionIndexes = (normalizedMessage, maxItems) => {
+  const indexes = [];
+  const numericMatches = normalizedMessage.match(/\d+/g) || [];
+  const idMatches = normalizedMessage.match(/\bs(\d+)\b/gi) || [];
+
+  numericMatches.forEach((value) => {
+    const numericValue = Number(value);
+
+    if (numericValue >= 1 && numericValue <= maxItems) {
+      indexes.push(numericValue);
+    }
+  });
+
+  idMatches.forEach((value) => {
+    const numericValue = Number(String(value).replace(/[^0-9]/g, ""));
+
+    if (numericValue >= 1 && numericValue <= maxItems) {
+      indexes.push(numericValue);
+    }
+  });
+
+  Object.entries(ORDINAL_WORD_TO_INDEX).forEach(([word, index]) => {
+    const pattern = new RegExp(`\\b${word}\\b`, "i");
+
+    if (pattern.test(normalizedMessage) && index <= maxItems) {
+      indexes.push(index);
+    }
+  });
+
+  return [...new Set(indexes)].sort((left, right) => left - right);
+};
+
+const extractSuggestedObjectiveSelection = ({
+  message,
+  suggestedObjectives = [],
+  allowAffirmativeSelection = false,
+}) => {
+  const normalized = String(message || "").trim().toLowerCase();
+
+  if (!normalized || !suggestedObjectives.length) {
+    return null;
+  }
+
+  if (allowAffirmativeSelection && isAffirmativeSelectionCommand(normalized)) {
+    return {
+      selectedObjectives: suggestedObjectives,
+      selectionLabel: "all",
+    };
+  }
+
+  const includesCreateIntent =
+    normalized.includes("create") ||
+    normalized.includes("add") ||
+    normalized.includes("make");
+
+  if (!includesCreateIntent) {
+    return null;
+  }
+
+  if (
+    normalized.includes("all") ||
+    normalized.includes("everything") ||
+    normalized.includes("all of them") ||
+    normalized.includes("all suggested")
+  ) {
+    return {
+      selectedObjectives: suggestedObjectives,
+      selectionLabel: "all",
+    };
+  }
+
+  const indexes = extractSelectionIndexes(
+    normalized,
+    suggestedObjectives.length
+  );
+
+  if (!indexes.length) {
+    return null;
+  }
+
+  return {
+    selectedObjectives: indexes.map((index) => suggestedObjectives[index - 1]),
+    selectionLabel: indexes.join(", "),
+  };
 };
 
 const buildConversationContext = (history = []) => {
@@ -219,35 +338,256 @@ const parseJson = (jsonString) => {
   }
 };
 
-const extractSuggestedObjectives = async (message, adviceText) => {
+const normalizeKeyResultItems = (keyResults) => {
+  if (!Array.isArray(keyResults)) {
+    return [];
+  }
+
+  return keyResults
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+};
+
+const generateObjectiveDescription = async ({
+  objectiveName,
+  organizationProfile,
+}) => {
   const response = await chatWithModel({
     messages: [
       {
         role: "system",
         content: [
-          "Extract organization objective suggestions from the assistant text.",
-          "Return only valid JSON.",
-          "Schema:",
-          '{ "organizationObjectives": [{"objectiveName":"string","description":"string"}] }',
-          "Keep only organization-level objectives.",
-          "Do not include department objectives, tasks, or key results.",
-          "If no clear organization objectives are present, return an empty array.",
+          "You write concise OKR objective descriptions for a company.",
+          "Return only the description text.",
+          "Keep it to one sentence, practical, and outcome-focused.",
+          "Do not use bullet points, numbering, quotes, or markdown.",
+          "Do not repeat the objective title verbatim unless necessary.",
         ].join("\n"),
       },
       {
         role: "user",
         content: [
-          `Original user request: ${message}`,
-          "Assistant response:",
-          adviceText,
+          `Objective title: ${objectiveName}`,
+          "",
+          "Company context:",
+          `Company: ${organizationProfile?.companyName || "-"}`,
+          `About: ${organizationProfile?.aboutCompany || "-"}`,
+          `Mission: ${organizationProfile?.companyMission || "-"}`,
+          `Vision: ${organizationProfile?.companyVision || "-"}`,
+          `Purpose: ${organizationProfile?.purpose || "-"}`,
+          `Solution: ${organizationProfile?.solution || "-"}`,
         ].join("\n"),
       },
     ],
+  });
+
+  return (
+    response.message?.content?.trim() ||
+    `Drive measurable progress for ${objectiveName.toLowerCase()} this cycle.`
+  );
+};
+
+const ensureObjectiveDescriptions = async ({
+  token,
+  objectives,
+}) => {
+  const itemsMissingDescriptions = objectives.filter(
+    (item) => !String(item.description || "").trim()
+  );
+
+  if (!itemsMissingDescriptions.length) {
+    return objectives;
+  }
+
+  const organizationProfile = (
+    await getCurrentOrganizationProfile(token)
+  ).data.data;
+
+  const enrichedObjectives = [];
+
+  for (const item of objectives) {
+    if (String(item.description || "").trim()) {
+      enrichedObjectives.push(item);
+      continue;
+    }
+
+    const description = await generateObjectiveDescription({
+      objectiveName: item.objectiveName,
+      organizationProfile,
+    });
+
+    enrichedObjectives.push({
+      ...item,
+      description,
+    });
+  }
+
+  return enrichedObjectives;
+};
+
+const normalizeStructuredStrategyPlan = (plan) => {
+  const items = Array.isArray(plan?.organizationObjectives)
+    ? plan.organizationObjectives
+    : [];
+
+  return items
+    .map((item, index) => ({
+      id: `s${index + 1}`,
+      objectiveName: String(item?.objectiveName || "").trim(),
+      description: String(item?.description || "").trim(),
+      keyResults: normalizeKeyResultItems(item?.keyResults),
+    }))
+    .filter((item) => item.objectiveName)
+    .slice(0, 5);
+};
+
+const buildStructuredStrategyMessages = ({
+  message,
+  profile,
+  departments,
+}) => {
+  const departmentList = departments?.length
+    ? departments
+        .map((department, index) => {
+          return `${index + 1}. ${department.departmentName || "-"} (${department.fullName || "No owner"})`;
+        })
+        .join("\n")
+    : "No department data available.";
+
+  const profileSummary = profile
+    ? [
+        `Company: ${profile.companyName || "-"}`,
+        `Organization name: ${profile.fullName || "-"}`,
+        `About: ${profile.aboutCompany || "-"}`,
+        `Mission: ${profile.companyMission || "-"}`,
+        `Vision: ${profile.companyVision || "-"}`,
+        `Purpose: ${profile.purpose || "-"}`,
+        `Solution: ${profile.solution || "-"}`,
+      ].join("\n")
+    : "No organization profile available.";
+
+  return [
+    {
+      role: "system",
+      content: [
+        "You are an OKR strategy planner for a business.",
+        "Return only valid JSON.",
+        "Propose exactly 3 distinct organization objectives unless the user explicitly asks for fewer.",
+        "Each objective must be independently creatable in an OKR system.",
+        "Descriptions must be one sentence and outcome-focused.",
+        "Each objective must include 2-4 outcome-focused key results.",
+        "Do not include department objectives, tasks, explanations, markdown, or extra text outside JSON.",
+        "Schema:",
+        '{',
+        '  "organizationObjectives": [',
+        '    {',
+        '      "objectiveName": "string",',
+        '      "description": "string",',
+        '      "keyResults": ["string"]',
+        '    }',
+        '  ]',
+        '}',
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: [
+        `User request: ${message}`,
+        "",
+        "Organization profile:",
+        profileSummary,
+        "",
+        "Known departments:",
+        departmentList,
+      ].join("\n"),
+    },
+  ];
+};
+
+const generateStructuredStrategyPlan = async (token, message) => {
+  const { profile, departments } = await loadStrategyContext(token);
+  const response = await chatWithModel({
+    messages: buildStructuredStrategyMessages({
+      message,
+      profile,
+      departments,
+    }),
     format: "json",
   });
 
   const parsed = parseJson(response.message?.content || "{}");
-  return normalizeObjectiveItems(parsed);
+  const organizationObjectives = normalizeStructuredStrategyPlan(parsed);
+
+  return {
+    profile,
+    departments,
+    organizationObjectives,
+  };
+};
+
+const formatStructuredStrategyAdvice = ({
+  organizationObjectives,
+  departments,
+}) => {
+  if (!organizationObjectives.length) {
+    return "I could not generate organization objective suggestions right now.";
+  }
+
+  const lines = [
+    "Suggested organization objectives:",
+    ...organizationObjectives.map((item, index) => (
+      `${index + 1}. ${item.objectiveName} - ${item.description || "No description"}`
+    )),
+    "",
+    "Recommended key results:",
+  ];
+
+  organizationObjectives.forEach((item, index) => {
+    lines.push(`${index + 1}. ${item.objectiveName}`);
+
+    if (item.keyResults.length) {
+      item.keyResults.forEach((keyResult, keyResultIndex) => {
+        lines.push(`   ${keyResultIndex + 1}. ${keyResult}`);
+      });
+    } else {
+      lines.push("   1. Define measurable outcome targets for this objective.");
+    }
+  });
+
+  if (departments?.length) {
+    lines.push("");
+    lines.push(
+      `Known departments that can support execution: ${departments
+        .map((department) => department.departmentName || department.fullName || "-")
+        .filter(Boolean)
+        .join(", ")}.`
+    );
+  }
+
+  lines.push("");
+  lines.push("Reply with 'create all', 'create 1,3', or 'create first and third objective'.");
+
+  return lines.join("\n");
+};
+
+const formatSuggestedObjectives = (objectives = []) => {
+  if (!objectives.length) {
+    return "";
+  }
+
+  return [
+    "",
+    "Suggested organization objectives:",
+    ...objectives.map((item, index) => {
+      const description = String(item.description || "").trim();
+      return description
+        ? `${index + 1}. ${item.objectiveName} - ${description}`
+        : `${index + 1}. ${item.objectiveName}`;
+    }),
+    "",
+    "Reply with 'create all' to create all of them, or 'create 1,3' to create selected ones.",
+  ].join("\n");
 };
 
 const normalizeObjectiveItems = (plan) => {
@@ -374,7 +714,10 @@ const resolveOrganizationObjectiveId = async (
 };
 
 const createBulkObjectives = async ({ plan, session }) => {
-  const organizationObjectives = normalizeObjectiveItems(plan);
+  const organizationObjectives = await ensureObjectiveDescriptions({
+    token: session.token,
+    objectives: normalizeObjectiveItems(plan),
+  });
   const departmentObjectives = normalizeDepartmentObjectiveItems(plan);
 
   if (!organizationObjectives.length && !departmentObjectives.length) {
@@ -395,7 +738,7 @@ const createBulkObjectives = async ({ plan, session }) => {
       session.token,
       organizationObjectives.map((item) => ({
         objectiveName: item.objectiveName,
-        description: item.description || "Created via Telegram",
+        description: item.description,
       }))
     );
 
@@ -477,11 +820,16 @@ const executeAction = async ({ plan, session }) => {
         };
       }
 
+      const objectiveItemsWithDescriptions = await ensureObjectiveDescriptions({
+        token: session.token,
+        objectives: objectiveItems,
+      });
+
       await createObjective(
         session.token,
-        objectiveItems.map((item) => ({
+        objectiveItemsWithDescriptions.map((item) => ({
           objectiveName: item.objectiveName,
-          description: item.description || "Created via Telegram",
+          description: item.description,
         }))
       );
 
@@ -489,9 +837,9 @@ const executeAction = async ({ plan, session }) => {
         success: true,
         action: "create_objective",
         summary:
-          objectiveItems.length === 1
-            ? `Objective "${objectiveItems[0].objectiveName}" created successfully.`
-            : `Created ${objectiveItems.length} organization objectives: ${objectiveItems
+          objectiveItemsWithDescriptions.length === 1
+            ? `Objective "${objectiveItemsWithDescriptions[0].objectiveName}" created successfully.`
+            : `Created ${objectiveItemsWithDescriptions.length} organization objectives: ${objectiveItemsWithDescriptions
                 .map((item) => item.objectiveName)
                 .join(", ")}.`,
       };
@@ -789,10 +1137,19 @@ const buildStrategyMessages = ({ message, profile, departments, mode, organizati
         "You are an OKR strategy advisor for a business using Telegram.",
         "Write practical, structured guidance.",
         "Keep the response concise but useful.",
-        "Prefer 1-3 organization objectives and 3-5 measurable key results per objective.",
+        "For strategy_advice mode, propose exactly 3 alternative organization objectives unless the user explicitly asks for only one final objective.",
+        "Each organization objective must be distinct and independently creatable in the OKR system.",
+        "After the objective list, give 2-4 measurable key results for each objective.",
         "Key results must be outcome-focused, not task-focused.",
         "If department alignment is requested, map likely department contributions from the organization objective.",
         "Avoid markdown symbols like ** because Telegram plain text may show them literally.",
+        "Use this plain-text structure for strategy_advice mode:",
+        "Suggested Organization Objectives:",
+        "1. <objective title> - <one-line description>",
+        "2. <objective title> - <one-line description>",
+        "3. <objective title> - <one-line description>",
+        "",
+        "Then add supporting sections like Key Results and Department Contributions.",
       ].join("\n"),
     },
     {
@@ -853,21 +1210,17 @@ const loadStrategyContext = async (token) => {
 };
 
 const generateStrategyAdvice = async (token, message) => {
-  const { profile, departments } = await loadStrategyContext(token);
-  const response = await chatWithModel({
-    messages: buildStrategyMessages({
-      message,
-      profile,
-      departments,
-      mode: "strategy_advice",
-      organizationObjective: "",
-    }),
-  });
+  const strategyPlan = await generateStructuredStrategyPlan(token, message);
 
-  return (
-    response.message?.content?.trim() ||
-    "I can help design organization OKRs from your business context."
-  );
+  return {
+    text: formatStructuredStrategyAdvice(strategyPlan),
+    organizationObjectives: strategyPlan.organizationObjectives.map(
+      ({ objectiveName, description }) => ({
+        objectiveName,
+        description,
+      })
+    ),
+  };
 };
 
 const generateDepartmentAlignment = async (
@@ -893,32 +1246,25 @@ const generateDepartmentAlignment = async (
 };
 
 const runAgent = async ({ message, session, history }) => {
-  if (
-    isCreateSuggestedObjectivesCommand(message) &&
-    Array.isArray(session?.suggestedOrganizationObjectives) &&
-    session.suggestedOrganizationObjectives.length
-  ) {
+  const suggestedObjectiveSelection = extractSuggestedObjectiveSelection({
+    message,
+    suggestedObjectives: session?.suggestedOrganizationObjectives || [],
+    allowAffirmativeSelection: Boolean(
+      session?.awaitingSuggestedObjectiveSelection
+    ),
+  });
+
+  if (suggestedObjectiveSelection) {
     const toolResult = await executeAction({
       plan: {
         action: "create_bulk_objectives",
-        organizationObjectives: session.suggestedOrganizationObjectives,
+        organizationObjectives: suggestedObjectiveSelection.selectedObjectives,
       },
       session,
     });
 
-    const finalResponse = await chatWithModel({
-      messages: buildFinalMessages({
-        message,
-        plan: { action: "create_bulk_objectives", reply: "" },
-        toolResult,
-      }),
-    });
-
     return {
-      text:
-        finalResponse.message?.content?.trim() ||
-        toolResult.summary ||
-        "Done.",
+      text: toolResult.summary || "Done.",
       suggestedOrganizationObjectives: session.suggestedOrganizationObjectives,
     };
   }
@@ -951,22 +1297,24 @@ const runAgent = async ({ message, session, history }) => {
   }
 
   if (plan.action === "strategy_advice" || plan.action === "department_alignment") {
-    const text = plan.action === "strategy_advice"
-      ? await generateStrategyAdvice(session.token, message)
-      : await generateDepartmentAlignment(
+    if (plan.action === "strategy_advice") {
+      const strategyAdvice = await generateStrategyAdvice(session.token, message);
+
+      return {
+        text: strategyAdvice.text,
+        suggestedOrganizationObjectives: strategyAdvice.organizationObjectives,
+      };
+    }
+
+    const text = await generateDepartmentAlignment(
           session.token,
           message,
           plan.organizationObjective || plan.reply
         );
 
-    const suggestedOrganizationObjectives =
-      plan.action === "strategy_advice"
-        ? await extractSuggestedObjectives(message, text)
-        : [];
-
     return {
       text,
-      suggestedOrganizationObjectives,
+      suggestedOrganizationObjectives: [],
     };
   }
 

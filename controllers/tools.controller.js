@@ -10,7 +10,12 @@ const {
   createKeyResult,
   updateObjectiveProgress,
 } = require("../services/objective.service");
-const { getDepartments } = require("../services/department.service");
+const {
+  getDepartments,
+  createDepartmentObjective,
+  getDepartmentObjectives,
+  createDepartmentTaskKeyResult,
+} = require("../services/department.service");
 const {
   generateStrategyAdvice,
   generateDepartmentAlignment,
@@ -242,6 +247,76 @@ const getDepartmentsTool = async (req, res) => {
   }
 };
 
+const createDepartmentObjectiveTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const { organizationObjectiveId, departmentObjective, description } = req.body;
+
+  if (!organizationObjectiveId || !departmentObjective) {
+    return res.status(400).json({
+      error: "organizationObjectiveId and departmentObjective are required",
+    });
+  }
+
+  try {
+    const response = await createDepartmentObjective(token, {
+      organizationObjectiveId,
+      departmentObjective,
+      description,
+    });
+    return res.json({
+      ok: true,
+      message: `Department objective "${departmentObjective}" created successfully`,
+      data: response.data,
+    });
+  } catch (error) {
+    return safeError(res, error, "Failed to create department objective", getSessionUserId(req));
+  }
+};
+
+const getDepartmentObjectivesTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const departmentId = req.query.departmentId || "";
+
+  try {
+    const response = await getDepartmentObjectives(token, departmentId);
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch department objectives", getSessionUserId(req));
+  }
+};
+
+const createDepartmentTaskKeyResultTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const { departmentObjectiveId, task, keyResult } = req.body;
+
+  if (!departmentObjectiveId || !task || !keyResult) {
+    return res.status(400).json({
+      error: "departmentObjectiveId, task, and keyResult are required",
+    });
+  }
+
+  try {
+    const response = await createDepartmentTaskKeyResult(token, {
+      departmentObjectiveId,
+      task,
+      keyResult,
+    });
+    return res.json({
+      ok: true,
+      message: `Task "${task}" with key result "${keyResult}" created successfully`,
+      data: response.data,
+    });
+  } catch (error) {
+    return safeError(res, error, "Failed to create department task and key result", getSessionUserId(req));
+  }
+};
+
 const strategyAdviceTool = async (req, res) => {
   const token = requireToken(req, res);
   if (!token) return;
@@ -335,6 +410,21 @@ const capabilitiesTool = async (req, res) => {
         path: "/tools/objectives/progress",
       },
       { name: "get_departments", method: "GET", path: "/tools/departments" },
+      {
+        name: "create_department_objective",
+        method: "POST",
+        path: "/tools/department-objectives",
+      },
+      {
+        name: "get_department_objectives",
+        method: "GET",
+        path: "/tools/department-objectives",
+      },
+      {
+        name: "create_department_task_key_result",
+        method: "POST",
+        path: "/tools/department-objectives/task-key-result",
+      },
       { name: "strategy_advice", method: "POST", path: "/tools/strategy/advice" },
       {
         name: "department_alignment",
@@ -354,6 +444,9 @@ module.exports = {
   createKeyResultTool,
   updateObjectiveProgressTool,
   getDepartmentsTool,
+  createDepartmentObjectiveTool,
+  getDepartmentObjectivesTool,
+  createDepartmentTaskKeyResultTool,
   strategyAdviceTool,
   departmentAlignmentTool,
   logoutTool,

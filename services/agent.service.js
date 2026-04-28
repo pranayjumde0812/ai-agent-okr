@@ -6,7 +6,12 @@ const {
   updateObjectiveProgress,
 } = require("./objective.service");
 const { getCurrentOrganizationProfile } = require("./auth.service");
-const { getDepartments } = require("./department.service");
+const {
+  getDepartments,
+  createDepartmentObjective,
+  getDepartmentObjectives,
+  createDepartmentTaskKeyResult,
+} = require("./department.service");
 const config = require("../config/env");
 
 const MAX_HISTORY_ITEMS = 8;
@@ -20,6 +25,9 @@ You can decide which tool to use based on user intent.
 Rules:
 - Be concise, clear, and action-oriented.
 - If the user asks to create an objective, use the create_objective tool.
+- If the user asks to create a department objective (an objective for a specific department under an organization objective), use create_department_objective.
+- If the user asks to list, show, or search department objectives, use get_department_objectives.
+- If the user asks to add a task with a key result under a department objective, use create_department_task_key_result.
 - If the user asks to create a key result, add a KR, or define a measurable result for an objective, use create_key_result.
 - If the user asks to update objective progress, change progress, or set completion percentage, use update_objective_progress.
 - If the user asks to list, show, or fetch objectives, use the get_objectives tool.
@@ -29,6 +37,8 @@ Rules:
 - If the user asks how department objectives should support an organization objective, use department_alignment.
 - If the user asks what you can do, use the send_help tool.
 - If the user request is missing key information for creating an objective, ask a follow-up question instead of guessing.
+- For create_department_objective, the user must provide or you must identify the organization objective it belongs to.
+- For create_department_task_key_result, both a task name and key result name are needed, plus the department objective it belongs to.
 - Never invent backend data. Use tools for backend data.
 - If the user is not authenticated, explain that they need to log in by sending their email first.
 `.trim();
@@ -74,11 +84,31 @@ const formatDepartments = (departments) => {
     .join("\n\n");
 };
 
+const formatDepartmentObjectives = (departmentObjectives) => {
+  if (!departmentObjectives?.length) {
+    return "No department objectives found.";
+  }
+
+  return departmentObjectives
+    .map((obj, index) => {
+      return [
+        `${index + 1}. ${obj.objective || obj.departmentObjective || "-"}`,
+        `   Description: ${obj.description || "-"}`,
+        `   Org Objective ID: ${obj.organizationObjectiveId || "-"}`,
+        `   Department ID: ${obj.departmentId || "-"}`,
+      ].join("\n");
+    })
+    .join("\n\n");
+};
+
 const HELP_TEXT = [
   "I can help you with your OKR workspace.",
   "",
   "Examples:",
   '- "Create an objective for improving sales this quarter"',
+  '- "Create a department objective for the AI team under my Use Of AI Agent objective"',
+  '- "Show department objectives"',
+  '- "Add a task and key result to my Test 1 department objective"',
   '- "Create a key result for my revenue objective"',
   '- "Update my onboarding objective progress to 60%"',
   '- "Show my objectives"',
@@ -109,12 +139,15 @@ const buildPlannerMessages = ({ message, session, history }) => {
         "",
         "You are an intent planner for this bot.",
         "Return only valid JSON.",
-        "Pick one action from: create_objective, create_key_result, update_objective_progress, get_objectives, get_profile, get_departments, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
+        "Pick one action from: create_objective, create_department_objective, get_department_objectives, create_department_task_key_result, create_key_result, update_objective_progress, get_objectives, get_profile, get_departments, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
         "Schema:",
         '{',
         '  "action": "string",',
         '  "objectiveId": "string",',
         '  "objectiveName": "string",',
+        '  "departmentObjective": "string",',
+        '  "organizationObjectiveId": "string",',
+        '  "departmentId": "string",',
         '  "keyResultName": "string",',
         '  "targetValue": "string",',
         '  "startValue": "string",',
@@ -122,12 +155,18 @@ const buildPlannerMessages = ({ message, session, history }) => {
         '  "progressValue": "string",',
         '  "description": "string",',
         '  "organizationObjective": "string",',
+        '  "taskName": "string",',
+        '  "departmentKeyResult": "string",',
+        '  "departmentObjectiveId": "string",',
         '  "reply": "string"',
         '}',
         'Use empty strings when a field is not needed.',
         'If the user is asking for help or greeting, use send_help or general_reply.',
         'If objective creation is requested but the title is unclear, use ask_clarification.',
         'If create_key_result or update_objective_progress is requested and the objective is unclear, use ask_clarification.',
+        'For create_department_objective, require organizationObjectiveId (or find it from the objective name) and departmentObjective title.',
+        'For get_department_objectives, optionally accept departmentId to filter by department.',
+        'For create_department_task_key_result, require departmentObjectiveId (or find it from the department objective name), taskName, and departmentKeyResult.',
         'Use strategy_advice for broad OKR/business-growth guidance.',
         'Use department_alignment when the user wants department objectives or department-wise breakdown from a company/organization objective.',
       ].join("\n"),
@@ -239,6 +278,113 @@ const executeAction = async ({ plan, session }) => {
       };
     }
 
+    case "create_department_objective": {
+      if (!plan.organizationObjectiveId) {
+        const orgResponse = await getObjectives(session.token);
+        const objectives = orgResponse.data.data.objectives || [];
+        const matched = objectives.find((o) => {
+          const name = (o.objectiveName || "").trim().toLowerCase();
+          const search = (plan.objectiveName || "").trim().toLowerCase();
+          return search && (name === search || name.includes(search));
+        });
+
+        if (matched) {
+          plan.organizationObjectiveId = matched.id || matched._id || matched.objectiveId;
+        } else {
+          return {
+            success: false,
+            action: "create_department_objective",
+            summary: "I could not find the organization objective. Please provide the exact name or ID.",
+          };
+        }
+      }
+
+      const response = await createDepartmentObjective(session.token, {
+        organizationObjectiveId: plan.organizationObjectiveId,
+        departmentObjective: plan.departmentObjective || plan.objectiveName,
+        description: plan.description || "",
+      });
+
+      return {
+        success: true,
+        action: "create_department_objective",
+        summary: `Department objective "${plan.departmentObjective || plan.objectiveName}" created successfully.`,
+        data: response.data,
+      };
+    }
+
+    case "get_department_objectives": {
+      const response = await getDepartmentObjectives(
+        session.token,
+        plan.departmentId || ""
+      );
+      const deptObjectives = response.data.data.departmentObjectives ||
+        response.data.data || [];
+
+      return {
+        success: true,
+        action: "get_department_objectives",
+        departmentObjectives: deptObjectives,
+        summary: formatDepartmentObjectives(
+          Array.isArray(deptObjectives) ? deptObjectives : []
+        ),
+      };
+    }
+
+    case "create_department_task_key_result": {
+      let deptObjId = plan.departmentObjectiveId;
+
+      if (!deptObjId) {
+        const deptObjResponse = await getDepartmentObjectives(session.token, "");
+        const deptObjectives = deptObjResponse.data.data.departmentObjectives ||
+          deptObjResponse.data.data || [];
+
+        if (Array.isArray(deptObjectives)) {
+          const searchName = (plan.departmentObjective || plan.objectiveName || "").trim().toLowerCase();
+          const matched = deptObjectives.find((d) => {
+            const name = (d.objective || d.departmentObjective || "").trim().toLowerCase();
+            return searchName && (name === searchName || name.includes(searchName));
+          });
+
+          if (matched) {
+            deptObjId = matched.id || matched._id;
+          }
+        }
+      }
+
+      if (!deptObjId) {
+        return {
+          success: false,
+          action: "create_department_task_key_result",
+          summary: "I could not find the department objective. Please provide the exact name or ID.",
+        };
+      }
+
+      const taskName = plan.taskName || plan.objectiveName || "";
+      const krName = plan.departmentKeyResult || plan.keyResultName || "";
+
+      if (!taskName || !krName) {
+        return {
+          success: false,
+          action: "create_department_task_key_result",
+          summary: "Both a task name and a key result name are needed. Please provide both.",
+        };
+      }
+
+      const response = await createDepartmentTaskKeyResult(session.token, {
+        departmentObjectiveId: deptObjId,
+        task: taskName,
+        keyResult: krName,
+      });
+
+      return {
+        success: true,
+        action: "create_department_task_key_result",
+        summary: `Task "${taskName}" with key result "${krName}" created successfully.`,
+        data: response.data,
+      };
+    }
+
     case "get_profile": {
       const response = await getCurrentOrganizationProfile(session.token);
 
@@ -281,6 +427,12 @@ const normalizePlan = (plan) => {
     action: plan.action || "general_reply",
     objectiveId: plan.objectiveId || "",
     objectiveName: plan.objectiveName || "",
+    departmentObjective: plan.departmentObjective || "",
+    organizationObjectiveId: plan.organizationObjectiveId || "",
+    departmentObjectiveId: plan.departmentObjectiveId || "",
+    departmentId: plan.departmentId || "",
+    taskName: plan.taskName || "",
+    departmentKeyResult: plan.departmentKeyResult || "",
     keyResultName: plan.keyResultName || "",
     targetValue: plan.targetValue || "",
     startValue: plan.startValue || "",

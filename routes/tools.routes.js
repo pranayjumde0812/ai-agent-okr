@@ -8,6 +8,9 @@ const {
   createKeyResultTool,
   updateObjectiveProgressTool,
   getDepartmentsTool,
+  createDepartmentObjectiveTool,
+  getDepartmentObjectivesTool,
+  createDepartmentTaskKeyResultTool,
   strategyAdviceTool,
   departmentAlignmentTool,
   logoutTool,
@@ -29,8 +32,12 @@ router.post("/objectives", createObjectiveTool);
 router.patch("/objectives/progress", updateObjectiveProgressTool);
 router.post("/key-results", createKeyResultTool);
 router.get("/departments", getDepartmentsTool);
+router.post("/department-objectives", createDepartmentObjectiveTool);
+router.get("/department-objectives", getDepartmentObjectivesTool);
+router.post("/department-objectives/task-key-result", createDepartmentTaskKeyResultTool);
 
 router.post("/strategy/advice", strategyAdviceTool);
 router.post("/strategy/department-alignment", departmentAlignmentTool);
 
 module.exports = router;
+

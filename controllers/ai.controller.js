@@ -157,6 +157,12 @@ const handleAI = async (req, res) => {
       history,
     });
 
+    if (Array.isArray(agentResult.suggestedOrganizationObjectives)) {
+      sessionStore.setSession(telegramUserId, {
+        suggestedOrganizationObjectives: agentResult.suggestedOrganizationObjectives,
+      });
+    }
+
     await sendMessage(telegramUserId, agentResult.text);
     sessionStore.appendHistory(telegramUserId, "assistant", agentResult.text);
     return res.sendStatus(200);

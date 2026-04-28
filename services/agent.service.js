@@ -106,6 +106,7 @@ const HELP_TEXT = [
   "",
   "Examples:",
   '- "Create an objective for improving sales this quarter"',
+  '- "Create these organization objectives: Improve retention | Grow revenue, and add department objectives for sales and support"',
   '- "Create a department objective for the AI team under my Use Of AI Agent objective"',
   '- "Show department objectives"',
   '- "Add a task and key result to my Test 1 department objective"',
@@ -117,6 +118,27 @@ const HELP_TEXT = [
   '- "Suggest company objectives to grow my business"',
   '- "Break this organization objective into department objectives"',
 ].join("\n");
+
+const isCreateSuggestedObjectivesCommand = (message) => {
+  const normalized = String(message || "").trim().toLowerCase();
+
+  if (!normalized) {
+    return false;
+  }
+
+  const includesCreate = normalized.includes("create");
+  const includesObjective = normalized.includes("objective");
+  const includesBulkReference =
+    normalized.includes("all") ||
+    normalized.includes("these") ||
+    normalized.includes("them") ||
+    normalized.includes("three") ||
+    normalized.includes("suggested") ||
+    normalized.includes("above") ||
+    normalized.includes("those");
+
+  return includesCreate && includesObjective && includesBulkReference;
+};
 
 const buildConversationContext = (history = []) => {
   const trimmedHistory = history.slice(-MAX_HISTORY_ITEMS);
@@ -139,7 +161,7 @@ const buildPlannerMessages = ({ message, session, history }) => {
         "",
         "You are an intent planner for this bot.",
         "Return only valid JSON.",
-        "Pick one action from: create_objective, create_department_objective, get_department_objectives, create_department_task_key_result, create_key_result, update_objective_progress, get_objectives, get_profile, get_departments, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
+        "Pick one action from: create_objective, create_department_objective, create_bulk_objectives, get_department_objectives, create_department_task_key_result, create_key_result, update_objective_progress, get_objectives, get_profile, get_departments, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
         "Schema:",
         '{',
         '  "action": "string",',
@@ -158,6 +180,8 @@ const buildPlannerMessages = ({ message, session, history }) => {
         '  "taskName": "string",',
         '  "departmentKeyResult": "string",',
         '  "departmentObjectiveId": "string",',
+        '  "organizationObjectives": [{"objectiveName":"string","description":"string"}],',
+        '  "departmentObjectives": [{"departmentObjective":"string","description":"string","organizationObjectiveId":"string","organizationObjective":"string","objectiveName":"string"}],',
         '  "reply": "string"',
         '}',
         'Use empty strings when a field is not needed.',
@@ -165,6 +189,8 @@ const buildPlannerMessages = ({ message, session, history }) => {
         'If objective creation is requested but the title is unclear, use ask_clarification.',
         'If create_key_result or update_objective_progress is requested and the objective is unclear, use ask_clarification.',
         'For create_department_objective, require organizationObjectiveId (or find it from the objective name) and departmentObjective title.',
+        'Use create_bulk_objectives when the user wants multiple organization objectives, multiple department objectives, or both in one request.',
+        'For create_bulk_objectives, fill organizationObjectives and/or departmentObjectives arrays.',
         'For get_department_objectives, optionally accept departmentId to filter by department.',
         'For create_department_task_key_result, require departmentObjectiveId (or find it from the department objective name), taskName, and departmentKeyResult.',
         'Use strategy_advice for broad OKR/business-growth guidance.',
@@ -193,19 +219,281 @@ const parseJson = (jsonString) => {
   }
 };
 
+const extractSuggestedObjectives = async (message, adviceText) => {
+  const response = await chatWithModel({
+    messages: [
+      {
+        role: "system",
+        content: [
+          "Extract organization objective suggestions from the assistant text.",
+          "Return only valid JSON.",
+          "Schema:",
+          '{ "organizationObjectives": [{"objectiveName":"string","description":"string"}] }',
+          "Keep only organization-level objectives.",
+          "Do not include department objectives, tasks, or key results.",
+          "If no clear organization objectives are present, return an empty array.",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `Original user request: ${message}`,
+          "Assistant response:",
+          adviceText,
+        ].join("\n"),
+      },
+    ],
+    format: "json",
+  });
+
+  const parsed = parseJson(response.message?.content || "{}");
+  return normalizeObjectiveItems(parsed);
+};
+
+const normalizeObjectiveItems = (plan) => {
+  const items = Array.isArray(plan.organizationObjectives)
+    ? plan.organizationObjectives
+    : [];
+
+  const normalizedItems = items
+    .map((item) => ({
+      objectiveName: String(item?.objectiveName || "").trim(),
+      description: String(item?.description || "").trim(),
+    }))
+    .filter((item) => item.objectiveName);
+
+  if (normalizedItems.length) {
+    return normalizedItems;
+  }
+
+  if (!plan.objectiveName) {
+    return [];
+  }
+
+  return [
+    {
+      objectiveName: String(plan.objectiveName).trim(),
+      description: String(plan.description || "").trim(),
+    },
+  ];
+};
+
+const normalizeDepartmentObjectiveItems = (plan) => {
+  const items = Array.isArray(plan.departmentObjectives)
+    ? plan.departmentObjectives
+    : [];
+
+  const normalizedItems = items
+    .map((item) => ({
+      departmentObjective: String(
+        item?.departmentObjective || item?.objectiveName || ""
+      ).trim(),
+      description: String(item?.description || "").trim(),
+      organizationObjectiveId: String(item?.organizationObjectiveId || "").trim(),
+      organizationObjective: String(
+        item?.organizationObjective || item?.objectiveName || ""
+      ).trim(),
+    }))
+    .filter((item) => item.departmentObjective);
+
+  if (normalizedItems.length) {
+    return normalizedItems;
+  }
+
+  if (!plan.departmentObjective && !plan.objectiveName) {
+    return [];
+  }
+
+  return [
+    {
+      departmentObjective: String(
+        plan.departmentObjective || plan.objectiveName || ""
+      ).trim(),
+      description: String(plan.description || "").trim(),
+      organizationObjectiveId: String(plan.organizationObjectiveId || "").trim(),
+      organizationObjective: String(plan.organizationObjective || plan.objectiveName || "").trim(),
+    },
+  ];
+};
+
+const findObjectiveByReference = (objectives, objectiveId, objectiveName) => {
+  if (objectiveId) {
+    const byId = objectives.find((objective) => {
+      const id = objective.id || objective._id || objective.objectiveId;
+      return String(id) === String(objectiveId);
+    });
+
+    if (byId) {
+      return byId;
+    }
+  }
+
+  if (!objectiveName) {
+    return null;
+  }
+
+  const normalizedName = objectiveName.trim().toLowerCase();
+
+  return (
+    objectives.find((objective) => {
+      return (
+        objective.objectiveName &&
+        objective.objectiveName.trim().toLowerCase() === normalizedName
+      );
+    }) ||
+    objectives.find((objective) => {
+      return (
+        objective.objectiveName &&
+        objective.objectiveName.trim().toLowerCase().includes(normalizedName)
+      );
+    }) ||
+    null
+  );
+};
+
+const resolveOrganizationObjectiveId = async (
+  token,
+  item,
+  fallbackReference = ""
+) => {
+  if (item.organizationObjectiveId) {
+    return item.organizationObjectiveId;
+  }
+
+  const response = await getObjectives(token);
+  const objectives = response.data.data.objectives || [];
+  const matched = findObjectiveByReference(
+    objectives,
+    item.organizationObjectiveId,
+    item.organizationObjective || fallbackReference
+  );
+
+  return matched
+    ? matched.id || matched._id || matched.objectiveId || ""
+    : "";
+};
+
+const createBulkObjectives = async ({ plan, session }) => {
+  const organizationObjectives = normalizeObjectiveItems(plan);
+  const departmentObjectives = normalizeDepartmentObjectiveItems(plan);
+
+  if (!organizationObjectives.length && !departmentObjectives.length) {
+    return {
+      success: false,
+      action: "create_bulk_objectives",
+      summary:
+        "Please provide at least one organization objective or department objective to create.",
+    };
+  }
+
+  const createdOrganizationObjectives = [];
+  const createdDepartmentObjectives = [];
+  const failures = [];
+
+  if (organizationObjectives.length) {
+    await createObjective(
+      session.token,
+      organizationObjectives.map((item) => ({
+        objectiveName: item.objectiveName,
+        description: item.description || "Created via Telegram",
+      }))
+    );
+
+    createdOrganizationObjectives.push(...organizationObjectives);
+  }
+
+  for (const item of departmentObjectives) {
+    const organizationObjectiveId = await resolveOrganizationObjectiveId(
+      session.token,
+      item,
+      organizationObjectives.length === 1
+        ? organizationObjectives[0].objectiveName
+        : ""
+    );
+
+    if (!organizationObjectiveId) {
+      failures.push(
+        `Could not match organization objective for department objective "${item.departmentObjective}".`
+      );
+      continue;
+    }
+
+    await createDepartmentObjective(session.token, {
+      organizationObjectiveId,
+      departmentObjective: item.departmentObjective,
+      description: item.description || "",
+    });
+
+    createdDepartmentObjectives.push({
+      departmentObjective: item.departmentObjective,
+      organizationObjectiveId,
+    });
+  }
+
+  const summaryParts = [];
+
+  if (createdOrganizationObjectives.length) {
+    summaryParts.push(
+      `Created ${createdOrganizationObjectives.length} organization objective${createdOrganizationObjectives.length === 1 ? "" : "s"}: ${createdOrganizationObjectives
+        .map((item) => item.objectiveName)
+        .join(", ")}.`
+    );
+  }
+
+  if (createdDepartmentObjectives.length) {
+    summaryParts.push(
+      `Created ${createdDepartmentObjectives.length} department objective${createdDepartmentObjectives.length === 1 ? "" : "s"}: ${createdDepartmentObjectives
+        .map((item) => item.departmentObjective)
+        .join(", ")}.`
+    );
+  }
+
+  if (failures.length) {
+    summaryParts.push(failures.join(" "));
+  }
+
+  return {
+    success: failures.length === 0,
+    action: "create_bulk_objectives",
+    createdOrganizationObjectives,
+    createdDepartmentObjectives,
+    failures,
+    summary:
+      summaryParts.join(" ") ||
+      "No objectives were created.",
+  };
+};
+
 const executeAction = async ({ plan, session }) => {
   switch (plan.action) {
     case "create_objective": {
+      const objectiveItems = normalizeObjectiveItems(plan);
+
+      if (!objectiveItems.length) {
+        return {
+          success: false,
+          action: "create_objective",
+          summary: "Please provide at least one organization objective title.",
+        };
+      }
+
       await createObjective(
         session.token,
-        plan.objectiveName,
-        plan.description || ""
+        objectiveItems.map((item) => ({
+          objectiveName: item.objectiveName,
+          description: item.description || "Created via Telegram",
+        }))
       );
 
       return {
         success: true,
         action: "create_objective",
-        summary: `Objective "${plan.objectiveName}" created successfully.`,
+        summary:
+          objectiveItems.length === 1
+            ? `Objective "${objectiveItems[0].objectiveName}" created successfully.`
+            : `Created ${objectiveItems.length} organization objectives: ${objectiveItems
+                .map((item) => item.objectiveName)
+                .join(", ")}.`,
       };
     }
 
@@ -279,39 +567,51 @@ const executeAction = async ({ plan, session }) => {
     }
 
     case "create_department_objective": {
-      if (!plan.organizationObjectiveId) {
-        const orgResponse = await getObjectives(session.token);
-        const objectives = orgResponse.data.data.objectives || [];
-        const matched = objectives.find((o) => {
-          const name = (o.objectiveName || "").trim().toLowerCase();
-          const search = (plan.objectiveName || "").trim().toLowerCase();
-          return search && (name === search || name.includes(search));
-        });
+      const departmentItems = normalizeDepartmentObjectiveItems(plan);
 
-        if (matched) {
-          plan.organizationObjectiveId = matched.id || matched._id || matched.objectiveId;
-        } else {
+      if (!departmentItems.length) {
+        return {
+          success: false,
+          action: "create_department_objective",
+          summary: "Please provide at least one department objective title.",
+        };
+      }
+
+      if (departmentItems.length > 1) {
+        return createBulkObjectives({ plan, session });
+      }
+
+      const [departmentItem] = departmentItems;
+      const organizationObjectiveId = await resolveOrganizationObjectiveId(
+        session.token,
+        departmentItem,
+        plan.objectiveName
+      );
+
+      if (!organizationObjectiveId) {
           return {
             success: false,
             action: "create_department_objective",
             summary: "I could not find the organization objective. Please provide the exact name or ID.",
           };
-        }
       }
 
       const response = await createDepartmentObjective(session.token, {
-        organizationObjectiveId: plan.organizationObjectiveId,
-        departmentObjective: plan.departmentObjective || plan.objectiveName,
-        description: plan.description || "",
+        organizationObjectiveId,
+        departmentObjective: departmentItem.departmentObjective,
+        description: departmentItem.description || "",
       });
 
       return {
         success: true,
         action: "create_department_objective",
-        summary: `Department objective "${plan.departmentObjective || plan.objectiveName}" created successfully.`,
+        summary: `Department objective "${departmentItem.departmentObjective}" created successfully.`,
         data: response.data,
       };
     }
+
+    case "create_bulk_objectives":
+      return createBulkObjectives({ plan, session });
 
     case "get_department_objectives": {
       const response = await getDepartmentObjectives(
@@ -440,6 +740,12 @@ const normalizePlan = (plan) => {
     progressValue: plan.progressValue || "",
     description: plan.description || "",
     organizationObjective: plan.organizationObjective || "",
+    organizationObjectives: Array.isArray(plan.organizationObjectives)
+      ? plan.organizationObjectives
+      : [],
+    departmentObjectives: Array.isArray(plan.departmentObjectives)
+      ? plan.departmentObjectives
+      : [],
     reply: plan.reply || "",
   };
 };
@@ -448,37 +754,10 @@ const findObjective = async (token, plan) => {
   const response = await getObjectives(token);
   const objectives = response.data.data.objectives || [];
 
-  if (plan.objectiveId) {
-    const byId = objectives.find((objective) => {
-      const id = objective.id || objective._id || objective.objectiveId;
-      return String(id) === String(plan.objectiveId);
-    });
-
-    if (byId) {
-      return byId;
-    }
-  }
-
-  if (!plan.objectiveName) {
-    return null;
-  }
-
-  const normalizedName = plan.objectiveName.trim().toLowerCase();
-
-  return (
-    objectives.find((objective) => {
-      return (
-        objective.objectiveName &&
-        objective.objectiveName.trim().toLowerCase() === normalizedName
-      );
-    }) ||
-    objectives.find((objective) => {
-      return (
-        objective.objectiveName &&
-        objective.objectiveName.trim().toLowerCase().includes(normalizedName)
-      );
-    }) ||
-    null
+  return findObjectiveByReference(
+    objectives,
+    plan.objectiveId,
+    plan.objectiveName
   );
 };
 
@@ -614,6 +893,36 @@ const generateDepartmentAlignment = async (
 };
 
 const runAgent = async ({ message, session, history }) => {
+  if (
+    isCreateSuggestedObjectivesCommand(message) &&
+    Array.isArray(session?.suggestedOrganizationObjectives) &&
+    session.suggestedOrganizationObjectives.length
+  ) {
+    const toolResult = await executeAction({
+      plan: {
+        action: "create_bulk_objectives",
+        organizationObjectives: session.suggestedOrganizationObjectives,
+      },
+      session,
+    });
+
+    const finalResponse = await chatWithModel({
+      messages: buildFinalMessages({
+        message,
+        plan: { action: "create_bulk_objectives", reply: "" },
+        toolResult,
+      }),
+    });
+
+    return {
+      text:
+        finalResponse.message?.content?.trim() ||
+        toolResult.summary ||
+        "Done.",
+      suggestedOrganizationObjectives: session.suggestedOrganizationObjectives,
+    };
+  }
+
   const plannerResponse = await chatWithModel({
     messages: buildPlannerMessages({ message, session, history }),
     format: "json",
@@ -642,14 +951,22 @@ const runAgent = async ({ message, session, history }) => {
   }
 
   if (plan.action === "strategy_advice" || plan.action === "department_alignment") {
+    const text = plan.action === "strategy_advice"
+      ? await generateStrategyAdvice(session.token, message)
+      : await generateDepartmentAlignment(
+          session.token,
+          message,
+          plan.organizationObjective || plan.reply
+        );
+
+    const suggestedOrganizationObjectives =
+      plan.action === "strategy_advice"
+        ? await extractSuggestedObjectives(message, text)
+        : [];
+
     return {
-      text: plan.action === "strategy_advice"
-        ? await generateStrategyAdvice(session.token, message)
-        : await generateDepartmentAlignment(
-            session.token,
-            message,
-            plan.organizationObjective || plan.reply
-          ),
+      text,
+      suggestedOrganizationObjectives,
     };
   }
 

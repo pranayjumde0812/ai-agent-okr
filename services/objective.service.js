@@ -6,14 +6,18 @@ const withAuth = (token) => ({
 });
 
 const createObjective = (token, name, description) => {
+  const objectives = Array.isArray(name)
+    ? name
+    : [
+        {
+          objectiveName: name,
+          description: description || "Created via Telegram",
+        },
+      ];
+
   return axios.post(
     `${config.apiBaseUrl}/objective`,
-    [
-      {
-        objectiveName: name,
-        description: description || "Created via Telegram",
-      },
-    ],
+    objectives,
     withAuth(token)
   );
 };

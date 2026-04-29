@@ -67,6 +67,14 @@ const getDepartmentObjectiveKeyResults = (token, departmentObjectiveId, role) =>
   return axios.get(`${config.apiBaseUrl}${path}`, withAuth(token));
 };
 
+const addWeightageToKeyResult = (token, keyResultId, payload) => {
+  return axios.put(
+    `${config.apiBaseUrl}/dashboard/add-weightage/key-result/${keyResultId}`,
+    payload,
+    withAuth(token)
+  );
+};
+
 const getDepartmentObjectivesForDepartment = (token, departmentId, role = "MANAGEMENT") => {
   return axios.get(
     departmentId
@@ -85,4 +93,5 @@ module.exports = {
   getCurrentDepartmentObjectives,
   getDepartmentObjectiveKeyResults,
   getDepartmentObjectivesForDepartment,
+  addWeightageToKeyResult,
 };

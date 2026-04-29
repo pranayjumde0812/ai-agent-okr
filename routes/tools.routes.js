@@ -15,6 +15,7 @@ const {
   getDepartmentObjectivesTool,
   createDepartmentTaskKeyResultTool,
   getDepartmentObjectiveKeyResultsTool,
+  updateDepartmentObjectiveKeyResultWeightageTool,
   getDashboardYearFiltersTool,
   getDashboardObjectiveGrowthTool,
   getDashboardDepartmentGrowthTool,
@@ -50,6 +51,10 @@ router.post("/department-objectives", createDepartmentObjectiveTool);
 router.get("/department-objectives", getDepartmentObjectivesTool);
 router.post("/department-objectives/task-key-result", createDepartmentTaskKeyResultTool);
 router.get("/department-objectives/:id/key-results", getDepartmentObjectiveKeyResultsTool);
+router.put(
+  "/department-objectives/key-results/:id/weightage",
+  updateDepartmentObjectiveKeyResultWeightageTool
+);
 
 router.get("/dashboard/year-filters", getDashboardYearFiltersTool);
 router.get("/dashboard/objective-growth", getDashboardObjectiveGrowthTool);

@@ -19,6 +19,7 @@ const {
   getCurrentDepartment,
   getCurrentDepartmentObjectives,
   getDepartmentObjectiveKeyResults,
+  addWeightageToKeyResult,
 } = require("../services/department.service");
 const {
   getYearFilters,
@@ -418,6 +419,40 @@ const getDepartmentObjectiveKeyResultsTool = async (req, res) => {
   }
 };
 
+const updateDepartmentObjectiveKeyResultWeightageTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const { id } = req.params;
+  const { weightage, departmentObjectiveId } = req.body;
+
+  if (!id || weightage === undefined || !departmentObjectiveId) {
+    return res.status(400).json({
+      error: "id, weightage, and departmentObjectiveId are required",
+    });
+  }
+
+  try {
+    const response = await addWeightageToKeyResult(token, id, {
+      weightage: Number(weightage),
+      departmentObjectiveId,
+    });
+
+    return res.json({
+      ok: true,
+      message: "Task weightage updated successfully",
+      data: response.data.data || response.data,
+    });
+  } catch (error) {
+    return safeError(
+      res,
+      error,
+      "Failed to update task weightage",
+      getSessionUserId(req)
+    );
+  }
+};
+
 const getDashboardYearFiltersTool = async (req, res) => {
   const token = requireToken(req, res);
   if (!token) return;
@@ -666,6 +701,11 @@ const capabilitiesTool = async (req, res) => {
         path: "/tools/department-objectives/:id/key-results",
       },
       {
+        name: "update_department_objective_key_result_weightage",
+        method: "PUT",
+        path: "/tools/department-objectives/key-results/:id/weightage",
+      },
+      {
         name: "get_dashboard_year_filters",
         method: "GET",
         path: "/tools/dashboard/year-filters",
@@ -726,6 +766,7 @@ module.exports = {
   getDepartmentObjectivesTool,
   createDepartmentTaskKeyResultTool,
   getDepartmentObjectiveKeyResultsTool,
+  updateDepartmentObjectiveKeyResultWeightageTool,
   getDashboardYearFiltersTool,
   getDashboardObjectiveGrowthTool,
   getDashboardDepartmentGrowthTool,

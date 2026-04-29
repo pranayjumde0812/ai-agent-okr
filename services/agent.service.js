@@ -18,6 +18,7 @@ const {
   getCurrentDepartmentObjectives,
   getDepartmentObjectiveKeyResults,
   getDepartmentObjectivesForDepartment,
+  addWeightageToKeyResult,
 } = require("./department.service");
 const {
   getYearFilters,
@@ -166,13 +167,25 @@ const formatDepartmentObjectiveKeyResults = (items) => {
   return items
     .map((item, index) => {
       return [
-        `${index + 1}. Task: ${item.task || item.taskName || "-"}`,
+        `${index + 1}. Task: ${item.objectiveInitiativeTask || item.task || item.taskName || "-"}`,
         `   Key Result: ${item.keyResult || item.keyResultName || "-"}`,
         `   Weightage: ${item.weightage ?? "-"}`,
         `   Current Score: ${item.currentScore ?? item.score ?? "-"}`,
       ].join("\n");
     })
     .join("\n\n");
+};
+
+const extractDepartmentObjectiveKeyResultItems = (payload) => {
+  if (!payload) {
+    return [];
+  }
+
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  return payload.response || payload.keyResults || payload.tasks || payload.data || [];
 };
 
 const formatDashboardStats = (title, payload) => {
@@ -258,6 +271,27 @@ const formatScoreEditStatus = (details) => {
   ].join("\n");
 };
 
+const formatKeyResultWeightageItems = (items) => {
+  if (!items?.length) {
+    return "No tasks found for this department objective.";
+  }
+
+  const totalWeightage = items.reduce(
+    (sum, item) => sum + Number(item.weightage || 0),
+    0
+  );
+
+  return [
+    `Current total allocated weightage: ${totalWeightage}%`,
+    "",
+    ...items.map((item, index) => [
+      `${index + 1}. Task: ${item.objectiveInitiativeTask || item.task || "-"}`,
+      `   Key Result: ${item.keyResult || "-"}`,
+      `   Current Weightage: ${item.weightage ?? 0}%`,
+    ].join("\n")),
+  ].join("\n\n");
+};
+
 const HELP_TEXT = [
   "I can help you with your OKR workspace.",
   "Login tip: send `department your@email.com` if you want a department login.",
@@ -288,6 +322,9 @@ const HELP_TEXT = [
   '- "Set up my meeting schedule" and use the buttons for day, timezone, and timer',
   '- "For meeting time you can send 2:30 PM and I will convert it automatically"',
   '- "Show score edit status"',
+  '- "Add weightage to tasks under a department objective"',
+  '- "Manage task weightage for the AI department"',
+  '- "Allocate task weightage with AI"',
   '- "Show my current department objectives"',
   '- "Show key results for my onboarding department objective"',
   '- "Suggest company objectives to grow my business"',
@@ -573,6 +610,31 @@ const buildInlineDepartmentObjectiveTaskKeyboard = (
   ],
 });
 
+const buildInlineDepartmentObjectiveWeightageKeyboard = (
+  departmentObjectives = []
+) => ({
+  inline_keyboard: [
+    ...departmentObjectives.map((item) => [
+      {
+        text: shortenButtonLabel(
+          `Weightage: ${item.objective || item.departmentObjective || "Department Objective"}`,
+          55
+        ),
+        callback_data: buildCallbackData(
+          "select_dept_obj_for_weightage",
+          String(item.id || item._id || item.departmentObjectiveId || "")
+        ),
+      },
+    ]),
+    [
+      {
+        text: "Close",
+        callback_data: buildCallbackData("close_weightage_flow", "close"),
+      },
+    ],
+  ],
+});
+
 const buildInlineSuggestedTaskKeyResultKeyboard = (items = []) => {
   const rows = items.map((item, index) => [
     {
@@ -688,6 +750,61 @@ const buildInlineScheduleTimerKeyboard = () => ({
       },
     ]),
     [{ text: "Close", callback_data: buildCallbackData("schedule_close", "close") }],
+  ],
+});
+
+const buildInlineWeightageModeKeyboard = () => ({
+  inline_keyboard: [
+    [
+      {
+        text: "Manual Weightage",
+        callback_data: buildCallbackData("weightage_mode_manual", "manual"),
+      },
+    ],
+    [
+      {
+        text: "AI Suggest Weightage",
+        callback_data: buildCallbackData("weightage_mode_ai", "ai"),
+      },
+    ],
+    [{ text: "Close", callback_data: buildCallbackData("close_weightage_flow", "close") }],
+  ],
+});
+
+const buildInlineKeyResultWeightageKeyboard = (items = []) => ({
+  inline_keyboard: [
+    ...items.map((item) => [
+      {
+        text: shortenButtonLabel(
+          `${item.objectiveInitiativeTask || item.task || "Task"} (${item.weightage ?? 0}%)`,
+          55
+        ),
+        callback_data: buildCallbackData(
+          "select_key_result_for_weightage",
+          String(item.id || item._id || "")
+        ),
+      },
+    ]),
+    [{ text: "Close", callback_data: buildCallbackData("close_weightage_flow", "close") }],
+  ],
+});
+
+const buildInlineSuggestedWeightageKeyboard = (items = []) => ({
+  inline_keyboard: [
+    ...items.map((item, index) => [
+      {
+        text: shortenButtonLabel(
+          `${item.taskName} -> ${item.weightage}%`,
+          55
+        ),
+        callback_data: buildCallbackData("apply_suggested_weightage", String(index)),
+      },
+    ]),
+    ...(items.length
+      ? [[{ text: "Apply All", callback_data: buildCallbackData("apply_all_suggested_weightage", "all") }]]
+      : []),
+    [{ text: "Manual Mode", callback_data: buildCallbackData("weightage_mode_manual", "manual") }],
+    [{ text: "Close", callback_data: buildCallbackData("close_weightage_flow", "close") }],
   ],
 });
 
@@ -857,6 +974,211 @@ const extractTimezoneInput = (message) => {
   return normalized;
 };
 
+const extractWeightageInput = (message) => {
+  const normalized = String(message || "").trim();
+  const match = normalized.match(/(\d{1,3})(?:\s*%|$)/);
+
+  if (!match) {
+    return null;
+  }
+
+  const value = Number(match[1]);
+
+  if (Number.isNaN(value) || value < 0 || value > 100) {
+    return null;
+  }
+
+  return value;
+};
+
+const getKeyResultIdentifier = (item) => {
+  return String(item?.id || item?._id || item?.keyResultId || "").trim();
+};
+
+const getTaskDisplayName = (item) => {
+  return (
+    item?.objectiveInitiativeTask ||
+    item?.task ||
+    item?.taskName ||
+    "Task"
+  );
+};
+
+const getDepartmentObjectiveDisplayName = (item) => {
+  return item?.objective || item?.departmentObjective || "Department objective";
+};
+
+const normalizeComparableText = (value) => {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+const getTotalWeightage = (items = []) => {
+  return items.reduce((sum, item) => sum + Number(item?.weightage || 0), 0);
+};
+
+const formatSuggestedWeightageAllocations = (items = []) => {
+  if (!items?.length) {
+    return "I could not prepare weightage suggestions for these tasks.";
+  }
+
+  const totalWeightage = getTotalWeightage(items);
+
+  return [
+    `Suggested total weightage: ${totalWeightage}%`,
+    "",
+    ...items.map((item, index) => [
+      `${index + 1}. Task: ${item.taskName || "-"}`,
+      `   Key Result: ${item.keyResult || "-"}`,
+      `   Suggested Weightage: ${item.weightage}%`,
+      `   Reason: ${item.reason || "-"}`,
+    ].join("\n")),
+  ].join("\n\n");
+};
+
+const matchWeightageSuggestionToItem = (suggestion, items = []) => {
+  const normalizedTaskName = normalizeComparableText(suggestion?.taskName);
+
+  if (!normalizedTaskName) {
+    return null;
+  }
+
+  return (
+    items.find((item) => normalizeComparableText(getTaskDisplayName(item)) === normalizedTaskName) ||
+    items.find((item) => normalizeComparableText(getTaskDisplayName(item)).includes(normalizedTaskName)) ||
+    items.find((item) => normalizedTaskName.includes(normalizeComparableText(getTaskDisplayName(item)))) ||
+    null
+  );
+};
+
+const normalizeSuggestedWeightageAllocations = (items = [], suggestions = []) => {
+  if (!items.length || !suggestions.length) {
+    return [];
+  }
+
+  const matchedSuggestions = suggestions
+    .map((suggestion) => {
+      const matchedItem = matchWeightageSuggestionToItem(suggestion, items);
+
+      if (!matchedItem) {
+        return null;
+      }
+
+      return {
+        keyResultId: getKeyResultIdentifier(matchedItem),
+        taskName: getTaskDisplayName(matchedItem),
+        keyResult: matchedItem.keyResult || "-",
+        weightage: Math.max(0, Math.min(100, Math.round(Number(suggestion.weightage || 0)))),
+        reason: suggestion.reason || "Prioritized based on expected impact and urgency.",
+      };
+    })
+    .filter(Boolean)
+    .filter((item, index, array) => {
+      return array.findIndex((candidate) => candidate.keyResultId === item.keyResultId) === index;
+    });
+
+  if (!matchedSuggestions.length) {
+    return [];
+  }
+
+  const allocationByKeyResultId = new Map(
+    matchedSuggestions.map((item) => [item.keyResultId, item])
+  );
+
+  const allocations = items.map((item) => {
+    const keyResultId = getKeyResultIdentifier(item);
+    const matched = allocationByKeyResultId.get(keyResultId);
+
+    return {
+      keyResultId,
+      taskName: getTaskDisplayName(item),
+      keyResult: item.keyResult || "-",
+      weightage: matched?.weightage ?? 0,
+      reason:
+        matched?.reason ||
+        "Kept at 0% because it was not prioritized in the current AI allocation set.",
+    };
+  });
+
+  let totalWeightage = getTotalWeightage(allocations);
+
+  if (totalWeightage > 100) {
+    const scaledAllocations = allocations.map((item) => ({
+      ...item,
+      weightage: Math.floor((item.weightage / totalWeightage) * 100),
+    }));
+    let remainder = 100 - getTotalWeightage(scaledAllocations);
+    const byWeightage = [...scaledAllocations].sort(
+      (left, right) => right.weightage - left.weightage
+    );
+
+    while (remainder > 0 && byWeightage.length) {
+      for (const item of byWeightage) {
+        if (remainder <= 0) {
+          break;
+        }
+
+        item.weightage += 1;
+        remainder -= 1;
+      }
+    }
+
+    totalWeightage = getTotalWeightage(scaledAllocations);
+    return scaledAllocations.map((item) => ({
+      ...item,
+      reason:
+        totalWeightage === 100
+          ? item.reason
+          : `${item.reason} Adjusted to keep the total within 100%.`,
+    }));
+  }
+
+  if (totalWeightage < 100) {
+    const targetItem =
+      [...allocations].sort((left, right) => right.weightage - left.weightage)[0] ||
+      allocations[0];
+
+    if (targetItem) {
+      targetItem.weightage += 100 - totalWeightage;
+      targetItem.reason = `${targetItem.reason} Added the remaining capacity so the allocation totals 100%.`;
+    }
+  }
+
+  return allocations;
+};
+
+const buildManualWeightagePrompt = ({
+  departmentObjectiveName,
+  selectedItem,
+  items = [],
+}) => {
+  const selectedKeyResultId = getKeyResultIdentifier(selectedItem);
+  const allocatedExcludingSelected = items.reduce((sum, item) => {
+    if (getKeyResultIdentifier(item) === selectedKeyResultId) {
+      return sum;
+    }
+
+    return sum + Number(item?.weightage || 0);
+  }, 0);
+  const maxAllowed = Math.max(0, 100 - allocatedExcludingSelected);
+
+  return [
+    `Department objective: ${departmentObjectiveName || "Department objective"}`,
+    `Selected task: ${getTaskDisplayName(selectedItem)}`,
+    `Current key result: ${selectedItem?.keyResult || "-"}`,
+    `Current task weightage: ${selectedItem?.weightage ?? 0}%`,
+    `Current total across this department objective: ${getTotalWeightage(items)}%`,
+    `You can set this task from 0% to ${maxAllowed}% without crossing the 100% limit.`,
+    "",
+    "Send just the weightage number or percentage.",
+    "Example: 35 or 35%",
+  ].join("\n");
+};
+
 const normalizeLooseText = (message) => {
   return String(message || "")
     .trim()
@@ -930,6 +1252,18 @@ const isScheduleViewIntentMessage = (message) => {
     isScheduleIntentMessage(normalized) &&
     (viewKeywords.some((keyword) => normalized.includes(keyword)) ||
       (normalized.includes("meeting") && normalized.includes("take place")))
+  );
+};
+
+const isWeightageIntentMessage = (message) => {
+  const normalized = normalizeLooseText(message);
+
+  return (
+    normalized.includes("weightage") ||
+    normalized.includes("weight age") ||
+    (normalized.includes("task") && normalized.includes("weight")) ||
+    (normalized.includes("allocate") && normalized.includes("weight")) ||
+    (normalized.includes("distribute") && normalized.includes("weight"))
   );
 };
 
@@ -2122,11 +2456,7 @@ const executeAction = async ({ plan, session }) => {
         departmentObjectiveId,
         session.role
       );
-      const items =
-        response.data.data.keyResults ||
-        response.data.data.tasks ||
-        response.data.data ||
-        [];
+      const items = extractDepartmentObjectiveKeyResultItems(response.data.data);
 
       return {
         success: true,
@@ -2581,6 +2911,67 @@ const generateDepartmentTaskSuggestions = async (
   };
 };
 
+const generateWeightageSuggestions = async (
+  token,
+  departmentObjectiveName,
+  tasks = []
+) => {
+  const response = await chatWithModel({
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are an OKR weightage allocator.",
+          "Return only valid JSON.",
+          "Distribute task weightage across the provided tasks.",
+          "The total weightage must be exactly 100.",
+          "Each weightage must be an integer from 0 to 100.",
+          "Prefer higher weightage for higher business impact, precedence, and execution priority.",
+          "Schema:",
+          "{",
+          '  "allocations": [',
+          "    {",
+          '      "taskName": "string",',
+          '      "weightage": 0,',
+          '      "reason": "string"',
+          "    }",
+          "  ]",
+          "}",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `Department objective: ${departmentObjectiveName}`,
+          "",
+          "Tasks:",
+          ...tasks.map((task, index) => (
+            `${index + 1}. ${task.objectiveInitiativeTask || task.task || "-"} | KR: ${task.keyResult || "-"} | Current weightage: ${task.weightage ?? 0}%`
+          )),
+        ].join("\n"),
+      },
+    ],
+    format: "json",
+  });
+
+  const parsed = parseJson(response.message?.content || "{}");
+  const allocations = Array.isArray(parsed.allocations) ? parsed.allocations : [];
+
+  const normalized = allocations
+    .map((item) => ({
+      taskName: String(item?.taskName || "").trim(),
+      weightage: Number(item?.weightage || 0),
+      reason: String(item?.reason || "").trim(),
+    }))
+    .filter((item) => item.taskName && Number.isFinite(item.weightage))
+    .map((item) => ({
+      ...item,
+      weightage: Math.max(0, Math.min(100, Math.round(item.weightage))),
+    }));
+
+  return normalized;
+};
+
 const clearScheduleFlowState = {
   scheduleFlowMode: "",
   pendingScheduleDayName: "",
@@ -2590,6 +2981,19 @@ const clearScheduleFlowState = {
   awaitingScheduleTimezoneInput: false,
   awaitingScheduleSetupConfirmation: false,
   promptedForScheduleSetup: false,
+};
+
+const clearWeightageFlowState = {
+  pendingWeightageDepartmentId: "",
+  pendingWeightageDepartmentName: "",
+  pendingWeightageDepartmentObjectiveId: "",
+  pendingWeightageDepartmentObjectiveName: "",
+  pendingWeightageItems: [],
+  pendingWeightageKeyResultId: "",
+  pendingWeightageTaskName: "",
+  awaitingWeightageInput: false,
+  suggestedWeightageAllocations: [],
+  weightageFlowMode: "",
 };
 
 const runAgent = async ({ message, session, history }) => {
@@ -3253,10 +3657,561 @@ const runAgent = async ({ message, session, history }) => {
     };
   }
 
+  if (callbackSelection?.action === "select_dept_for_weightage") {
+    if (String(session?.role || "").toUpperCase() !== "MANAGEMENT") {
+      return {
+        text: "Task weightage management is currently available only for management login.",
+        clearSourceReplyMarkup: true,
+        sessionUpdates: clearWeightageFlowState,
+      };
+    }
+
+    const [departmentIndexValue] = callbackSelection.args;
+    const departmentIndex = Number(departmentIndexValue);
+    const selectedDepartmentOption = Array.isArray(session?.pendingDepartmentOptions)
+      ? session.pendingDepartmentOptions[departmentIndex]
+      : null;
+    const selectedDepartment = selectedDepartmentOption?.id
+      ? await getDepartmentById(session.token, selectedDepartmentOption.id)
+      : null;
+
+    if (!selectedDepartment) {
+      return {
+        text: "I could not find that department anymore. Please try again.",
+      };
+    }
+
+    const selectedDepartmentId =
+      selectedDepartment.id ||
+      selectedDepartment._id ||
+      selectedDepartment.departmentId;
+    const selectedDepartmentName = getDepartmentDisplayName(selectedDepartment);
+    const departmentObjectivesResponse =
+      await getDepartmentObjectivesForDepartment(
+        session.token,
+        selectedDepartmentId,
+        session.role
+      );
+    const departmentObjectives =
+      departmentObjectivesResponse.data.data.departmentObjectives ||
+      departmentObjectivesResponse.data.data.departments ||
+      departmentObjectivesResponse.data.data ||
+      [];
+
+    if (!Array.isArray(departmentObjectives) || !departmentObjectives.length) {
+      return {
+        text: `No department objectives found for ${selectedDepartmentName}. Create a department objective first, then come back to weightage management.`,
+        clearSourceReplyMarkup: true,
+        sessionUpdates: {
+          ...clearWeightageFlowState,
+          pendingWeightageDepartmentId: selectedDepartmentId || "",
+          pendingWeightageDepartmentName: selectedDepartmentName,
+        },
+      };
+    }
+
+    return {
+      text: `Selected department: ${selectedDepartmentName}\n\nNow choose the department objective whose task weightage you want to manage.`,
+      replyMarkup: buildInlineDepartmentObjectiveWeightageKeyboard(
+        departmentObjectives
+      ),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        ...clearWeightageFlowState,
+        pendingWeightageDepartmentId: selectedDepartmentId || "",
+        pendingWeightageDepartmentName: selectedDepartmentName,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "select_dept_obj_for_weightage") {
+    const [departmentObjectiveId] = callbackSelection.args;
+    const selectedDepartmentObjective = await findDepartmentObjective(
+      session.token,
+      {
+        departmentObjectiveId,
+        departmentId: session?.pendingWeightageDepartmentId || "",
+        role: session?.role || "MANAGEMENT",
+      }
+    );
+
+    if (!selectedDepartmentObjective) {
+      return {
+        text: "I could not find that department objective anymore. Please try again.",
+      };
+    }
+
+    const selectedDepartmentObjectiveId =
+      selectedDepartmentObjective.id ||
+      selectedDepartmentObjective._id ||
+      selectedDepartmentObjective.departmentObjectiveId;
+    const selectedDepartmentObjectiveName =
+      getDepartmentObjectiveDisplayName(selectedDepartmentObjective);
+    const keyResultsResponse = await getDepartmentObjectiveKeyResults(
+      session.token,
+      selectedDepartmentObjectiveId,
+      session.role
+    );
+    const keyResultItems = extractDepartmentObjectiveKeyResultItems(
+      keyResultsResponse.data.data
+    );
+
+    if (!Array.isArray(keyResultItems) || !keyResultItems.length) {
+      return {
+        text: `No tasks or key results were found under "${selectedDepartmentObjectiveName}". Create a task and key result first, then come back to weightage management.`,
+        clearSourceReplyMarkup: true,
+        sessionUpdates: {
+          ...clearWeightageFlowState,
+          pendingWeightageDepartmentId: session?.pendingWeightageDepartmentId || "",
+          pendingWeightageDepartmentName: session?.pendingWeightageDepartmentName || "",
+          pendingWeightageDepartmentObjectiveId: selectedDepartmentObjectiveId || "",
+          pendingWeightageDepartmentObjectiveName: selectedDepartmentObjectiveName,
+        },
+      };
+    }
+
+    return {
+      text: [
+        `Selected department: ${session?.pendingWeightageDepartmentName || "Department"}`,
+        `Selected department objective: ${selectedDepartmentObjectiveName}`,
+        "",
+        formatKeyResultWeightageItems(keyResultItems),
+        "",
+        "Choose how you want to allocate weightage.",
+      ].join("\n"),
+      replyMarkup: buildInlineWeightageModeKeyboard(),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        ...clearWeightageFlowState,
+        pendingWeightageDepartmentId: session?.pendingWeightageDepartmentId || "",
+        pendingWeightageDepartmentName: session?.pendingWeightageDepartmentName || "",
+        pendingWeightageDepartmentObjectiveId: selectedDepartmentObjectiveId || "",
+        pendingWeightageDepartmentObjectiveName: selectedDepartmentObjectiveName,
+        pendingWeightageItems: keyResultItems,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "weightage_mode_manual") {
+    if (!session?.pendingWeightageDepartmentObjectiveId) {
+      return {
+        text: "Please choose the department objective first.",
+      };
+    }
+
+    const keyResultItems = Array.isArray(session?.pendingWeightageItems) &&
+      session.pendingWeightageItems.length
+      ? session.pendingWeightageItems
+      : (
+          await getDepartmentObjectiveKeyResults(
+            session.token,
+            session.pendingWeightageDepartmentObjectiveId,
+            session.role
+          )
+        ).data.data || [];
+    const normalizedItems = extractDepartmentObjectiveKeyResultItems(keyResultItems);
+
+    return {
+      text: [
+        formatKeyResultWeightageItems(
+          Array.isArray(normalizedItems) ? normalizedItems : []
+        ),
+        "",
+        "Choose the task below to set or update its weightage.",
+      ].join("\n"),
+      replyMarkup: buildInlineKeyResultWeightageKeyboard(
+        Array.isArray(normalizedItems) ? normalizedItems : []
+      ),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        pendingWeightageItems: Array.isArray(normalizedItems)
+          ? normalizedItems
+          : [],
+        pendingWeightageKeyResultId: "",
+        pendingWeightageTaskName: "",
+        awaitingWeightageInput: false,
+        suggestedWeightageAllocations: [],
+        weightageFlowMode: "manual",
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "weightage_mode_ai") {
+    if (!session?.pendingWeightageDepartmentObjectiveId) {
+      return {
+        text: "Please choose the department objective first.",
+      };
+    }
+
+    const keyResultItems = Array.isArray(session?.pendingWeightageItems) &&
+      session.pendingWeightageItems.length
+      ? session.pendingWeightageItems
+      : (
+          await getDepartmentObjectiveKeyResults(
+            session.token,
+            session.pendingWeightageDepartmentObjectiveId,
+            session.role
+          )
+        ).data.data || [];
+    const normalizedItems = extractDepartmentObjectiveKeyResultItems(keyResultItems);
+    const allocations = normalizeSuggestedWeightageAllocations(
+      Array.isArray(normalizedItems) ? normalizedItems : [],
+      await generateWeightageSuggestions(
+        session.token,
+        session.pendingWeightageDepartmentObjectiveName || "Department objective",
+        Array.isArray(normalizedItems) ? normalizedItems : []
+      )
+    );
+
+    if (!allocations.length) {
+      return {
+        text: [
+          "I could not prepare reliable AI weightage suggestions for those tasks right now.",
+          "You can switch to manual mode and set the task weightage yourself.",
+        ].join("\n"),
+        clearSourceReplyMarkup: true,
+        replyMarkup: buildInlineWeightageModeKeyboard(),
+        sessionUpdates: {
+          pendingWeightageItems: Array.isArray(normalizedItems)
+            ? normalizedItems
+            : [],
+          suggestedWeightageAllocations: [],
+          awaitingWeightageInput: false,
+          weightageFlowMode: "ai",
+        },
+      };
+    }
+
+    return {
+      text: [
+        `Selected department objective: ${session.pendingWeightageDepartmentObjectiveName || "Department objective"}`,
+        "",
+        formatSuggestedWeightageAllocations(allocations),
+        "",
+        "Use the buttons below to apply one suggestion, apply all, or switch to manual mode.",
+      ].join("\n"),
+      replyMarkup: buildInlineSuggestedWeightageKeyboard(allocations),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        pendingWeightageItems: Array.isArray(normalizedItems)
+          ? normalizedItems
+          : [],
+        suggestedWeightageAllocations: allocations,
+        awaitingWeightageInput: false,
+        weightageFlowMode: "ai",
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "select_key_result_for_weightage") {
+    const [keyResultId] = callbackSelection.args;
+    const selectedItem = Array.isArray(session?.pendingWeightageItems)
+      ? session.pendingWeightageItems.find(
+          (item) => getKeyResultIdentifier(item) === String(keyResultId)
+        )
+      : null;
+
+    if (!selectedItem) {
+      return {
+        text: "I could not find that task anymore. Please choose it again.",
+      };
+    }
+
+    return {
+      text: buildManualWeightagePrompt({
+        departmentObjectiveName:
+          session?.pendingWeightageDepartmentObjectiveName || "",
+        selectedItem,
+        items: session?.pendingWeightageItems || [],
+      }),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        pendingWeightageKeyResultId: keyResultId,
+        pendingWeightageTaskName: getTaskDisplayName(selectedItem),
+        awaitingWeightageInput: true,
+        suggestedWeightageAllocations: [],
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "apply_suggested_weightage") {
+    const [indexValue] = callbackSelection.args;
+    const selectedIndex = Number(indexValue);
+    const suggestedAllocations = Array.isArray(session?.suggestedWeightageAllocations)
+      ? session.suggestedWeightageAllocations
+      : [];
+    const selectedAllocation = suggestedAllocations[selectedIndex];
+
+    if (
+      !selectedAllocation ||
+      !session?.pendingWeightageDepartmentObjectiveId
+    ) {
+      return {
+        text: "I could not find that weightage suggestion anymore. Please generate it again.",
+      };
+    }
+
+    try {
+      await addWeightageToKeyResult(session.token, selectedAllocation.keyResultId, {
+        weightage: selectedAllocation.weightage,
+        departmentObjectiveId: session.pendingWeightageDepartmentObjectiveId,
+      });
+    } catch (error) {
+      return {
+        text: [
+          `I could not apply ${selectedAllocation.weightage}% to "${selectedAllocation.taskName}".`,
+          error?.response?.data?.message ||
+            error?.response?.data?.error ||
+            error.message,
+        ].join("\n"),
+      };
+    }
+
+    const refreshedResponse = await getDepartmentObjectiveKeyResults(
+      session.token,
+      session.pendingWeightageDepartmentObjectiveId,
+      session.role
+    );
+    const refreshedItems = extractDepartmentObjectiveKeyResultItems(
+      refreshedResponse.data.data
+    );
+    const remainingAllocations = suggestedAllocations.filter(
+      (_, index) => index !== selectedIndex
+    );
+
+    return {
+      text: [
+        `Applied ${selectedAllocation.weightage}% to task "${selectedAllocation.taskName}".`,
+        "",
+        formatKeyResultWeightageItems(
+          Array.isArray(refreshedItems) ? refreshedItems : []
+        ),
+        "",
+        remainingAllocations.length
+          ? "You can still apply the remaining AI suggestions below or switch to manual mode."
+          : "All remaining weightage suggestions for this flow have been handled.",
+      ].join("\n"),
+      clearSourceReplyMarkup: true,
+      ...(remainingAllocations.length
+        ? {
+            replyMarkup: buildInlineSuggestedWeightageKeyboard(
+              remainingAllocations
+            ),
+          }
+        : {
+            replyMarkup: buildInlineWeightageModeKeyboard(),
+          }),
+      sessionUpdates: {
+        pendingWeightageItems: Array.isArray(refreshedItems)
+          ? refreshedItems
+          : [],
+        suggestedWeightageAllocations: remainingAllocations,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "apply_all_suggested_weightage") {
+    const suggestedAllocations = Array.isArray(session?.suggestedWeightageAllocations)
+      ? session.suggestedWeightageAllocations
+      : [];
+    const existingItems = Array.isArray(session?.pendingWeightageItems)
+      ? session.pendingWeightageItems
+      : [];
+
+    if (
+      !suggestedAllocations.length ||
+      !existingItems.length ||
+      !session?.pendingWeightageDepartmentObjectiveId
+    ) {
+      return {
+        text: "I could not find the stored AI weightage suggestions. Please generate them again.",
+      };
+    }
+
+    for (const item of existingItems) {
+      await addWeightageToKeyResult(session.token, getKeyResultIdentifier(item), {
+        weightage: 0,
+        departmentObjectiveId: session.pendingWeightageDepartmentObjectiveId,
+      });
+    }
+
+    for (const allocation of suggestedAllocations) {
+      if (!allocation.weightage) {
+        continue;
+      }
+
+      await addWeightageToKeyResult(session.token, allocation.keyResultId, {
+        weightage: allocation.weightage,
+        departmentObjectiveId: session.pendingWeightageDepartmentObjectiveId,
+      });
+    }
+
+    const refreshedResponse = await getDepartmentObjectiveKeyResults(
+      session.token,
+      session.pendingWeightageDepartmentObjectiveId,
+      session.role
+    );
+    const refreshedItems = extractDepartmentObjectiveKeyResultItems(
+      refreshedResponse.data.data
+    );
+
+    return {
+      text: [
+        `Applied the AI weightage plan for ${session.pendingWeightageDepartmentObjectiveName || "the selected department objective"}.`,
+        "",
+        formatKeyResultWeightageItems(
+          Array.isArray(refreshedItems) ? refreshedItems : []
+        ),
+        "",
+        "If you want to fine-tune anything, switch to manual mode below.",
+      ].join("\n"),
+      clearSourceReplyMarkup: true,
+      replyMarkup: buildInlineWeightageModeKeyboard(),
+      sessionUpdates: {
+        pendingWeightageItems: Array.isArray(refreshedItems)
+          ? refreshedItems
+          : [],
+        suggestedWeightageAllocations: [],
+        awaitingWeightageInput: false,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "close_weightage_flow") {
+    return {
+      text: "Closed the task-weightage flow.",
+      clearSourceReplyMarkup: true,
+      sessionUpdates: clearWeightageFlowState,
+    };
+  }
+
+  if (session?.awaitingWeightageInput && session?.pendingWeightageKeyResultId) {
+    const weightage = extractWeightageInput(message);
+
+    if (weightage === null) {
+      const selectedItem = Array.isArray(session?.pendingWeightageItems)
+        ? session.pendingWeightageItems.find(
+            (item) =>
+              getKeyResultIdentifier(item) ===
+              String(session.pendingWeightageKeyResultId)
+          )
+        : null;
+
+      return {
+        text: selectedItem
+          ? buildManualWeightagePrompt({
+              departmentObjectiveName:
+                session?.pendingWeightageDepartmentObjectiveName || "",
+              selectedItem,
+              items: session?.pendingWeightageItems || [],
+            })
+          : "Please send a valid weightage like 25 or 25%.",
+      };
+    }
+
+    try {
+      await addWeightageToKeyResult(session.token, session.pendingWeightageKeyResultId, {
+        weightage,
+        departmentObjectiveId: session.pendingWeightageDepartmentObjectiveId,
+      });
+    } catch (error) {
+      const selectedItem = Array.isArray(session?.pendingWeightageItems)
+        ? session.pendingWeightageItems.find(
+            (item) =>
+              getKeyResultIdentifier(item) ===
+              String(session.pendingWeightageKeyResultId)
+          )
+        : null;
+
+      return {
+        text: [
+          `I could not save that weightage for "${session.pendingWeightageTaskName || "the selected task"}".`,
+          error?.response?.data?.message ||
+            error?.response?.data?.error ||
+            error.message,
+          "",
+          selectedItem
+            ? buildManualWeightagePrompt({
+                departmentObjectiveName:
+                  session?.pendingWeightageDepartmentObjectiveName || "",
+                selectedItem,
+                items: session?.pendingWeightageItems || [],
+              })
+            : "Please send a valid weightage like 25 or 25%.",
+        ].join("\n"),
+      };
+    }
+
+    const refreshedResponse = await getDepartmentObjectiveKeyResults(
+      session.token,
+      session.pendingWeightageDepartmentObjectiveId,
+      session.role
+    );
+    const refreshedItems = extractDepartmentObjectiveKeyResultItems(
+      refreshedResponse.data.data
+    );
+
+    return {
+      text: [
+        `Updated "${session.pendingWeightageTaskName || "the selected task"}" to ${weightage}%.`,
+        "",
+        formatKeyResultWeightageItems(
+          Array.isArray(refreshedItems) ? refreshedItems : []
+        ),
+        "",
+        "Choose another task below if you want to continue adjusting weightage.",
+      ].join("\n"),
+      replyMarkup: buildInlineKeyResultWeightageKeyboard(
+        Array.isArray(refreshedItems) ? refreshedItems : []
+      ),
+      sessionUpdates: {
+        pendingWeightageItems: Array.isArray(refreshedItems)
+          ? refreshedItems
+          : [],
+        pendingWeightageKeyResultId: "",
+        pendingWeightageTaskName: "",
+        awaitingWeightageInput: false,
+        suggestedWeightageAllocations: [],
+      },
+    };
+  }
+
   const currentObjectivesResponse = await getObjectives(session.token);
   const currentObjectives =
     currentObjectivesResponse.data.data.objectives || [];
   const normalizedMessage = String(message || "").trim().toLowerCase();
+
+  if (isWeightageIntentMessage(message)) {
+    if (String(session?.role || "").toUpperCase() !== "MANAGEMENT") {
+      return {
+        text: "Task weightage management is currently available only for management login.",
+      };
+    }
+
+    const departmentsResponse = await getDepartments(session.token);
+    const departments =
+      departmentsResponse.data.data.departments ||
+      departmentsResponse.data.data.departmentUsers ||
+      [];
+
+    if (!Array.isArray(departments) || !departments.length) {
+      return {
+        text: "I could not find any active departments to manage weightage for.",
+      };
+    }
+
+    return {
+      text: "Let's manage task weightage. First select the department.",
+      replyMarkup: buildInlineDepartmentSelectionKeyboard(
+        departments,
+        "select_dept_for_weightage"
+      ),
+      sessionUpdates: {
+        ...clearWeightageFlowState,
+        pendingDepartmentOptions: buildDepartmentSessionOptions(departments),
+      },
+    };
+  }
 
   if (
     normalizedMessage.includes("schedule") &&

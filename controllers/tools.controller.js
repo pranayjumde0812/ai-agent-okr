@@ -2,6 +2,7 @@ const {
   sendOtp,
   verifyOtp,
   getCurrentOrganizationProfile,
+  getProfileDetails,
   signOut,
 } = require("../services/auth.service");
 const {
@@ -15,7 +16,21 @@ const {
   createDepartmentObjective,
   getDepartmentObjectives,
   createDepartmentTaskKeyResult,
+  getCurrentDepartment,
+  getCurrentDepartmentObjectives,
+  getDepartmentObjectiveKeyResults,
 } = require("../services/department.service");
+const {
+  getYearFilters,
+  getObjectiveGrowth,
+  getDepartmentGrowth,
+  getYearlyGrowth,
+} = require("../services/stats.service");
+const {
+  getScheduleDetails,
+  updateScheduleDetails,
+  getScoreEditStatus,
+} = require("../services/setting.service");
 const {
   generateStrategyAdvice,
   generateDepartmentAlignment,
@@ -25,16 +40,18 @@ const { isAuthExpiredError } = require("../utils/auth-error");
 
 const getTokenFromRequest = (req) => {
   const authHeader = req.headers.authorization || "";
+  const body = req.body || {};
+  const query = req.query || {};
 
   if (authHeader.startsWith("Bearer ")) {
     return authHeader.slice(7).trim();
   }
 
   const userId =
-    req.body.userId ||
-    req.body.telegramUserId ||
-    req.query.userId ||
-    req.query.telegramUserId;
+    body.userId ||
+    body.telegramUserId ||
+    query.userId ||
+    query.telegramUserId;
 
   if (!userId) {
     return "";
@@ -44,7 +61,18 @@ const getTokenFromRequest = (req) => {
 };
 
 const getSessionUserId = (req) => {
-  return String(req.body.userId || req.body.telegramUserId || req.query.userId || req.query.telegramUserId || "");
+  const body = req.body || {};
+  const query = req.query || {};
+
+  return String(body.userId || body.telegramUserId || query.userId || query.telegramUserId || "");
+};
+
+const getSessionRole = (req) => {
+  const userId = getSessionUserId(req);
+  const body = req.body || {};
+  const query = req.query || {};
+
+  return body.role || query.role || sessionStore.getSession(userId)?.role || "MANAGEMENT";
 };
 
 const requireToken = (req, res) => {
@@ -75,7 +103,7 @@ const safeError = (res, error, fallbackMessage, userId = "") => {
 };
 
 const sendOtpTool = async (req, res) => {
-  const { email } = req.body;
+  const { email, loginAs = "auto" } = req.body;
   const userId = getSessionUserId(req);
 
   if (!email) {
@@ -83,15 +111,19 @@ const sendOtpTool = async (req, res) => {
   }
 
   try {
-    await sendOtp(email);
+    const authResult = await sendOtp(email, loginAs);
 
     if (userId) {
-      sessionStore.setSession(userId, { email });
+      sessionStore.setSession(userId, {
+        email,
+        loginMode: authResult.loginMode,
+      });
     }
 
     return res.json({
       ok: true,
       message: "OTP sent to your email",
+      loginMode: authResult.loginMode,
       sessionStored: Boolean(userId),
     });
   } catch (error) {
@@ -104,6 +136,7 @@ const verifyOtpTool = async (req, res) => {
   const userId = getSessionUserId(req);
   const session = userId ? sessionStore.getSession(userId) : undefined;
   const resolvedEmail = email || session?.email;
+  const resolvedLoginMode = req.body.loginAs || session?.loginMode || "organization";
 
   if (!resolvedEmail || otp === undefined) {
     return res.status(400).json({
@@ -112,16 +145,22 @@ const verifyOtpTool = async (req, res) => {
   }
 
   try {
-    const response = await verifyOtp(resolvedEmail, Number(otp));
-    const data = response.data.data;
+    const authResult = await verifyOtp(
+      resolvedEmail,
+      Number(otp),
+      resolvedLoginMode
+    );
+    const data = authResult.response.data.data;
     const token = data.tokens.access.token;
+    const role = authResult.loginMode === "department" ? "DEPARTMENT" : "MANAGEMENT";
 
     if (userId) {
       sessionStore.setSession(userId, {
         email: resolvedEmail,
         token,
         organizationId: data.organization?.id,
-        role: "MANAGEMENT",
+        role,
+        loginMode: authResult.loginMode,
       });
     }
 
@@ -129,7 +168,10 @@ const verifyOtpTool = async (req, res) => {
       ok: true,
       message: "Login successful",
       token,
-      organization: data.organization,
+      loginMode: authResult.loginMode,
+      role,
+      organization: data.organization || null,
+      department: data.department || null,
       sessionStored: Boolean(userId),
     });
   } catch (error) {
@@ -146,6 +188,18 @@ const getProfileTool = async (req, res) => {
     return res.json({ ok: true, data: response.data.data });
   } catch (error) {
     return safeError(res, error, "Failed to fetch profile", getSessionUserId(req));
+  }
+};
+
+const getProfileDetailsTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  try {
+    const response = await getProfileDetails(token, getSessionRole(req));
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch profile details", getSessionUserId(req));
   }
 };
 
@@ -247,6 +301,30 @@ const getDepartmentsTool = async (req, res) => {
   }
 };
 
+const getCurrentDepartmentTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  try {
+    const response = await getCurrentDepartment(token);
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch current department", getSessionUserId(req));
+  }
+};
+
+const getCurrentDepartmentObjectivesTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  try {
+    const response = await getCurrentDepartmentObjectives(token);
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch current department objectives", getSessionUserId(req));
+  }
+};
+
 const createDepartmentObjectiveTool = async (req, res) => {
   const token = requireToken(req, res);
   if (!token) return;
@@ -318,6 +396,155 @@ const createDepartmentTaskKeyResultTool = async (req, res) => {
   }
 };
 
+const getDepartmentObjectiveKeyResultsTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const { id } = req.params;
+
+  if (!id) {
+    return res.status(400).json({ error: "department objective id is required" });
+  }
+
+  try {
+    const response = await getDepartmentObjectiveKeyResults(
+      token,
+      id,
+      getSessionRole(req)
+    );
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch department objective key results", getSessionUserId(req));
+  }
+};
+
+const getDashboardYearFiltersTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  try {
+    const response = await getYearFilters(token, getSessionRole(req));
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch dashboard year filters", getSessionUserId(req));
+  }
+};
+
+const getDashboardObjectiveGrowthTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const { year, quarter } = req.query;
+
+  if (!year || !quarter) {
+    return res.status(400).json({ error: "year and quarter are required" });
+  }
+
+  try {
+    const response = await getObjectiveGrowth(token, {
+      year,
+      quarter,
+      role: getSessionRole(req),
+    });
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch objective growth", getSessionUserId(req));
+  }
+};
+
+const getDashboardDepartmentGrowthTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const { year, quarter } = req.query;
+
+  if (!year || !quarter) {
+    return res.status(400).json({ error: "year and quarter are required" });
+  }
+
+  try {
+    const response = await getDepartmentGrowth(token, { year, quarter });
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch department growth", getSessionUserId(req));
+  }
+};
+
+const getDashboardYearlyGrowthTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const { year } = req.query;
+
+  if (!year) {
+    return res.status(400).json({ error: "year is required" });
+  }
+
+  try {
+    const response = await getYearlyGrowth(token, {
+      year,
+      role: getSessionRole(req),
+    });
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch yearly growth", getSessionUserId(req));
+  }
+};
+
+const getScheduleDetailsTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  try {
+    const response = await getScheduleDetails(token);
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch schedule details", getSessionUserId(req));
+  }
+};
+
+const updateScheduleDetailsTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const {
+    dayName,
+    meetingTime,
+    timezone,
+    timeSlotHoursBeforeMeeting,
+  } = req.body;
+
+  if (!dayName || !meetingTime || !timezone || timeSlotHoursBeforeMeeting === undefined) {
+    return res.status(400).json({
+      error: "dayName, meetingTime, timezone, and timeSlotHoursBeforeMeeting are required",
+    });
+  }
+
+  try {
+    const response = await updateScheduleDetails(token, {
+      dayName,
+      meetingTime,
+      timezone,
+      timeSlotHoursBeforeMeeting,
+    });
+    return res.json({ ok: true, data: response.data.data, message: "Schedule updated successfully" });
+  } catch (error) {
+    return safeError(res, error, "Failed to update schedule details", getSessionUserId(req));
+  }
+};
+
+const getScoreEditStatusTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  try {
+    const response = await getScoreEditStatus(token);
+    return res.json({ ok: true, data: response.data.data });
+  } catch (error) {
+    return safeError(res, error, "Failed to fetch score edit status", getSessionUserId(req));
+  }
+};
+
 const strategyAdviceTool = async (req, res) => {
   const token = requireToken(req, res);
   if (!token) return;
@@ -329,8 +556,8 @@ const strategyAdviceTool = async (req, res) => {
   }
 
   try {
-    const text = await generateStrategyAdvice(token, prompt);
-    return res.json({ ok: true, text });
+    const result = await generateStrategyAdvice(token, prompt);
+    return res.json({ ok: true, ...result });
   } catch (error) {
     return safeError(res, error, "Failed to generate strategy advice", getSessionUserId(req));
   }
@@ -402,6 +629,7 @@ const capabilitiesTool = async (req, res) => {
       { name: "verify_otp", method: "POST", path: "/tools/auth/verify-otp" },
       { name: "logout", method: "POST", path: "/tools/auth/logout" },
       { name: "get_profile", method: "GET", path: "/tools/profile" },
+      { name: "get_profile_details", method: "GET", path: "/tools/profile/details" },
       { name: "get_objectives", method: "GET", path: "/tools/objectives" },
       { name: "create_objective", method: "POST", path: "/tools/objectives" },
       { name: "create_key_result", method: "POST", path: "/tools/key-results" },
@@ -411,6 +639,12 @@ const capabilitiesTool = async (req, res) => {
         path: "/tools/objectives/progress",
       },
       { name: "get_departments", method: "GET", path: "/tools/departments" },
+      { name: "get_current_department", method: "GET", path: "/tools/departments/current" },
+      {
+        name: "get_current_department_objectives",
+        method: "GET",
+        path: "/tools/departments/current/objectives",
+      },
       {
         name: "create_department_objective",
         method: "POST",
@@ -426,6 +660,46 @@ const capabilitiesTool = async (req, res) => {
         method: "POST",
         path: "/tools/department-objectives/task-key-result",
       },
+      {
+        name: "get_department_objective_key_results",
+        method: "GET",
+        path: "/tools/department-objectives/:id/key-results",
+      },
+      {
+        name: "get_dashboard_year_filters",
+        method: "GET",
+        path: "/tools/dashboard/year-filters",
+      },
+      {
+        name: "get_dashboard_objective_growth",
+        method: "GET",
+        path: "/tools/dashboard/objective-growth?year=YYYY-YY&quarter=Q",
+      },
+      {
+        name: "get_dashboard_department_growth",
+        method: "GET",
+        path: "/tools/dashboard/department-growth?year=YYYY-YY&quarter=Q",
+      },
+      {
+        name: "get_dashboard_yearly_growth",
+        method: "GET",
+        path: "/tools/dashboard/yearly-growth?year=YYYY-YY",
+      },
+      {
+        name: "get_schedule_details",
+        method: "GET",
+        path: "/tools/settings/schedule",
+      },
+      {
+        name: "update_schedule_details",
+        method: "PUT",
+        path: "/tools/settings/schedule",
+      },
+      {
+        name: "get_score_edit_status",
+        method: "GET",
+        path: "/tools/settings/score-edit-status",
+      },
       { name: "strategy_advice", method: "POST", path: "/tools/strategy/advice" },
       {
         name: "department_alignment",
@@ -440,14 +714,25 @@ module.exports = {
   sendOtpTool,
   verifyOtpTool,
   getProfileTool,
+  getProfileDetailsTool,
   getObjectivesTool,
   createObjectiveTool,
   createKeyResultTool,
   updateObjectiveProgressTool,
   getDepartmentsTool,
+  getCurrentDepartmentTool,
+  getCurrentDepartmentObjectivesTool,
   createDepartmentObjectiveTool,
   getDepartmentObjectivesTool,
   createDepartmentTaskKeyResultTool,
+  getDepartmentObjectiveKeyResultsTool,
+  getDashboardYearFiltersTool,
+  getDashboardObjectiveGrowthTool,
+  getDashboardDepartmentGrowthTool,
+  getDashboardYearlyGrowthTool,
+  getScheduleDetailsTool,
+  updateScheduleDetailsTool,
+  getScoreEditStatusTool,
   strategyAdviceTool,
   departmentAlignmentTool,
   logoutTool,

@@ -5,6 +5,8 @@ const withAuth = (token) => ({
   headers: { Authorization: `Bearer ${token}` },
 });
 
+const normalizeRole = (role = "") => String(role || "").trim().toUpperCase();
+
 const getDepartments = (token) => {
   return axios.get(`${config.apiBaseUrl}/dashboard/departments`, withAuth(token));
 };
@@ -41,9 +43,46 @@ const createDepartmentTaskKeyResult = (token, payload) => {
   );
 };
 
+const getCurrentDepartment = (token) => {
+  return axios.get(
+    `${config.apiBaseUrl}/dashboard/current-department`,
+    withAuth(token)
+  );
+};
+
+const getCurrentDepartmentObjectives = (token) => {
+  return axios.get(
+    `${config.apiBaseUrl}/dashboard/current-department/objectives`,
+    withAuth(token)
+  );
+};
+
+const getDepartmentObjectiveKeyResults = (token, departmentObjectiveId, role) => {
+  const normalizedRole = normalizeRole(role);
+  const path =
+    normalizedRole === "DEPARTMENT"
+      ? `/dashboard/dept-objective/${departmentObjectiveId}/key-results`
+      : `/dashboard/department-objective/${departmentObjectiveId}/key-results`;
+
+  return axios.get(`${config.apiBaseUrl}${path}`, withAuth(token));
+};
+
+const getDepartmentObjectivesForDepartment = (token, departmentId, role = "MANAGEMENT") => {
+  return axios.get(
+    departmentId
+      ? `${config.apiBaseUrl}/department-objective?departmentId=${departmentId}`
+      : `${config.apiBaseUrl}/department-objective`,
+    withAuth(token)
+  );
+};
+
 module.exports = {
   getDepartments,
   createDepartmentObjective,
   getDepartmentObjectives,
   createDepartmentTaskKeyResult,
+  getCurrentDepartment,
+  getCurrentDepartmentObjectives,
+  getDepartmentObjectiveKeyResults,
+  getDepartmentObjectivesForDepartment,
 };

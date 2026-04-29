@@ -5,13 +5,31 @@ const {
   createKeyResult,
   updateObjectiveProgress,
 } = require("./objective.service");
-const { getCurrentOrganizationProfile } = require("./auth.service");
+const {
+  getCurrentOrganizationProfile,
+  getProfileDetails,
+} = require("./auth.service");
 const {
   getDepartments,
   createDepartmentObjective,
   getDepartmentObjectives,
   createDepartmentTaskKeyResult,
+  getCurrentDepartment,
+  getCurrentDepartmentObjectives,
+  getDepartmentObjectiveKeyResults,
+  getDepartmentObjectivesForDepartment,
 } = require("./department.service");
+const {
+  getYearFilters,
+  getObjectiveGrowth,
+  getDepartmentGrowth,
+  getYearlyGrowth,
+} = require("./stats.service");
+const {
+  getScheduleDetails,
+  updateScheduleDetails,
+  getScoreEditStatus,
+} = require("./setting.service");
 const config = require("../config/env");
 
 const MAX_HISTORY_ITEMS = 8;
@@ -32,7 +50,13 @@ Rules:
 - If the user asks to update objective progress, change progress, or set completion percentage, use update_objective_progress.
 - If the user asks to list, show, or fetch objectives, use the get_objectives tool.
 - If the user asks about profile, organization details, company information, mission, or vision, use the get_profile tool.
+- If the user asks for account profile details, owner details, or my-account details, use the get_profile_details tool.
 - If the user asks about departments, team progress, or department list, use the get_departments tool.
+- If the user asks about the current department, department account, or department-specific dashboard details, use get_current_department or get_current_department_objectives.
+- If the user asks for year filters, dashboard objective growth, yearly growth, or department growth trends, use the dashboard stats tools.
+- If the user asks for schedule details, meeting schedule, score-management schedule, timer details, or score edit status, use the schedule tools.
+- If the user asks to create or update the schedule, require day, time, timezone, and timer hours before meeting.
+- If the user asks to list tasks or key results under a department objective, use get_department_objective_key_results.
 - If the user asks for business growth suggestions, OKR advice, strategic objectives, key results, or how to manage objectives, use strategy_advice.
 - If the user asks how department objectives should support an organization objective, use department_alignment.
 - If the user asks what you can do, use the send_help tool.
@@ -84,6 +108,25 @@ const formatDepartments = (departments) => {
     .join("\n\n");
 };
 
+const formatProfileDetails = (profileDetails) => {
+  if (!profileDetails || typeof profileDetails !== "object") {
+    return "No profile details found.";
+  }
+
+  return Object.entries(profileDetails)
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .map(([key, value]) => {
+      const label = key
+        .replace(/([A-Z])/g, " $1")
+        .replace(/_/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      return `${label.charAt(0).toUpperCase()}${label.slice(1)}: ${value}`;
+    })
+    .join("\n");
+};
+
 const formatDepartmentObjectives = (departmentObjectives) => {
   if (!departmentObjectives?.length) {
     return "No department objectives found.";
@@ -101,8 +144,123 @@ const formatDepartmentObjectives = (departmentObjectives) => {
     .join("\n\n");
 };
 
+const formatCurrentDepartment = (department) => {
+  if (!department || typeof department !== "object") {
+    return "No current department details found.";
+  }
+
+  return [
+    `Department: ${department.departmentName || department.fullName || "-"}`,
+    `Owner: ${department.fullName || "-"}`,
+    `Email: ${department.email || "-"}`,
+    `Progress: ${department.progressPercentage ?? department.score ?? 0}%`,
+    `Organization: ${department.organizationName || department.companyName || "-"}`,
+  ].join("\n");
+};
+
+const formatDepartmentObjectiveKeyResults = (items) => {
+  if (!items?.length) {
+    return "No key results found for that department objective.";
+  }
+
+  return items
+    .map((item, index) => {
+      return [
+        `${index + 1}. Task: ${item.task || item.taskName || "-"}`,
+        `   Key Result: ${item.keyResult || item.keyResultName || "-"}`,
+        `   Weightage: ${item.weightage ?? "-"}`,
+        `   Current Score: ${item.currentScore ?? item.score ?? "-"}`,
+      ].join("\n");
+    })
+    .join("\n\n");
+};
+
+const formatDashboardStats = (title, payload) => {
+  if (payload === null || payload === undefined) {
+    return `${title}: No data found.`;
+  }
+
+  if (Array.isArray(payload)) {
+    if (!payload.length) {
+      return `${title}: No data found.`;
+    }
+
+    return [
+      `${title}:`,
+      ...payload.map((item, index) => `${index + 1}. ${JSON.stringify(item)}`),
+    ].join("\n");
+  }
+
+  if (typeof payload === "object") {
+    return [
+      `${title}:`,
+      ...Object.entries(payload).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
+    ].join("\n");
+  }
+
+  return `${title}: ${payload}`;
+};
+
+const toTitleCase = (value) => {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (!normalized) {
+    return "-";
+  }
+
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+};
+
+const formatTimeForDisplay = (value) => {
+  const normalized = String(value || "").trim();
+
+  if (!normalized) {
+    return "-";
+  }
+
+  const timePartMatch = normalized.match(/(\d{2}):(\d{2})(?::(\d{2}))?$/);
+
+  if (!timePartMatch) {
+    return normalized;
+  }
+
+  const [, hourValue, minuteValue] = timePartMatch;
+  let hours = Number(hourValue);
+  const minutes = minuteValue;
+  const meridiem = hours >= 12 ? "PM" : "AM";
+
+  hours = hours % 12 || 12;
+
+  return `${hours}:${minutes} ${meridiem}`;
+};
+
+const formatScheduleDetails = (scheduleDetails) => {
+  if (!scheduleDetails || Object.keys(scheduleDetails).length === 0) {
+    return "No score-management schedule has been configured yet.";
+  }
+
+  return [
+    `Meeting day: Every ${toTitleCase(scheduleDetails.dayName)} each week`,
+    `Meeting time: ${formatTimeForDisplay(scheduleDetails.meetingTimeTimezone || scheduleDetails.meetingTimeUtc)}`,
+    `Timezone: ${scheduleDetails.timezone || "-"}`,
+    `Score Window will open to add score before meeting: ${scheduleDetails.timeSlotHoursBeforeMeeting ?? "-"} hours`,
+  ].join("\n");
+};
+
+const formatScoreEditStatus = (details) => {
+  if (!details || typeof details !== "object") {
+    return "No score edit status found.";
+  }
+
+  return [
+    `Allow edit: ${details.allowEdit ? "Yes" : "No"}`,
+    `Edit window end: ${details.endTime || "-"}`,
+  ].join("\n");
+};
+
 const HELP_TEXT = [
   "I can help you with your OKR workspace.",
+  "Login tip: send `department your@email.com` if you want a department login.",
   "",
   "Examples:",
   '- "Create an objective for improving sales this quarter"',
@@ -113,11 +271,25 @@ const HELP_TEXT = [
   '- "Create a department objective for the AI team under my Use Of AI Agent objective"',
   '- "Show department objectives"',
   '- "Add a task and key result to my Test 1 department objective"',
+  '- "Ask for task and KR suggestions for my onboarding department objective"',
+  '- "If you are logged in as organization and ask to create task and KR, I will first show departments, then department objectives, then suggested task/KR pairs"',
+  '- "After selecting a department objective button, choose a suggested task/KR or send: Prepare onboarding checklist | Complete onboarding checklist for 100% of new hires"',
   '- "Create a key result for my revenue objective"',
   '- "Update my onboarding objective progress to 60%"',
   '- "Show my objectives"',
   '- "Get my company profile"',
+  '- "Show my profile details"',
   '- "List departments and progress"',
+  '- "Show dashboard year filters"',
+  '- "Show objective growth for 2025-26 quarter 2"',
+  '- "Show yearly growth for 2025-26"',
+  '- "Show my score-management schedule"',
+  '- "Update the schedule to Tuesday 14:30:00 in Asia/Kolkata with a 24 hour timer"',
+  '- "Set up my meeting schedule" and use the buttons for day, timezone, and timer',
+  '- "For meeting time you can send 2:30 PM and I will convert it automatically"',
+  '- "Show score edit status"',
+  '- "Show my current department objectives"',
+  '- "Show key results for my onboarding department objective"',
   '- "Suggest company objectives to grow my business"',
   '- "Break this organization objective into department objectives"',
 ].join("\n");
@@ -331,11 +503,14 @@ const getDepartmentDisplayName = (department) => {
   );
 };
 
-const buildInlineDepartmentSelectionKeyboard = (departments = []) => ({
+const buildInlineDepartmentSelectionKeyboard = (
+  departments = [],
+  action = "select_dept_for_org"
+) => ({
   inline_keyboard: departments.map((department, index) => [
     {
       text: shortenButtonLabel(getDepartmentDisplayName(department), 40),
-      callback_data: buildCallbackData("select_dept_for_org", String(index)),
+      callback_data: buildCallbackData(action, String(index)),
     },
   ]),
 });
@@ -372,6 +547,149 @@ const buildInlineDepartmentObjectiveCreateKeyboard = (
 
   return { inline_keyboard: rows };
 };
+
+const buildInlineDepartmentObjectiveTaskKeyboard = (
+  departmentObjectives = []
+) => ({
+  inline_keyboard: [
+    ...departmentObjectives.map((item) => [
+      {
+        text: shortenButtonLabel(
+          `Task/KR: ${item.objective || item.departmentObjective || "Department Objective"}`,
+          55
+        ),
+        callback_data: buildCallbackData(
+          "select_dept_obj_for_task_kr",
+          String(item.id || item._id || item.departmentObjectiveId || "")
+        ),
+      },
+    ]),
+    [
+      {
+        text: "Close",
+        callback_data: buildCallbackData("close_task_kr_flow", "close"),
+      },
+    ],
+  ],
+});
+
+const buildInlineSuggestedTaskKeyResultKeyboard = (items = []) => {
+  const rows = items.map((item, index) => [
+    {
+      text: shortenButtonLabel(
+        `Create: ${item.taskName} -> ${item.departmentKeyResult}`,
+        55
+      ),
+      callback_data: buildCallbackData("create_suggested_task_kr", String(index)),
+    },
+  ]);
+
+  if (items.length > 1) {
+    rows.push([
+      {
+        text: "Create All",
+        callback_data: buildCallbackData("create_all_suggested_task_kr", "all"),
+      },
+    ]);
+  }
+
+  rows.push([
+    {
+      text: "Manual Entry",
+      callback_data: buildCallbackData("manual_task_kr_entry", "manual"),
+    },
+  ]);
+
+  rows.push([
+    {
+      text: "Close",
+      callback_data: buildCallbackData("close_task_kr_flow", "close"),
+    },
+  ]);
+
+  return { inline_keyboard: rows };
+};
+
+const SCHEDULE_DAYS = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+];
+
+const SCHEDULE_TIMEZONE_OPTIONS = [
+  { label: "Asia/Kolkata", value: "Asia/Kolkata" },
+  { label: "UTC", value: "UTC" },
+  { label: "Asia/Dubai", value: "Asia/Dubai" },
+  { label: "Europe/London", value: "Europe/London" },
+  { label: "America/New_York", value: "America/New_York" },
+  { label: "Asia/Singapore", value: "Asia/Singapore" },
+];
+
+const SCHEDULE_TIMER_OPTIONS = [12, 24, 36, 48];
+
+const buildInlineScheduleActionKeyboard = (hasExistingSchedule = false) => ({
+  inline_keyboard: [
+    [
+      {
+        text: hasExistingSchedule ? "Update Schedule" : "Set Up Schedule",
+        callback_data: buildCallbackData(
+          hasExistingSchedule ? "schedule_start_update" : "schedule_start_setup",
+          "start"
+        ),
+      },
+    ],
+    ...(hasExistingSchedule
+      ? [[{ text: "Show Current", callback_data: buildCallbackData("schedule_show_current", "show") }]]
+      : []),
+    [{ text: "Close", callback_data: buildCallbackData("schedule_close", "close") }],
+  ],
+});
+
+const buildInlineScheduleDayKeyboard = () => ({
+  inline_keyboard: [
+    ...SCHEDULE_DAYS.map((dayName, index) => [
+      {
+        text: dayName.charAt(0).toUpperCase() + dayName.slice(1),
+        callback_data: buildCallbackData("schedule_day", String(index)),
+      },
+    ]),
+    [{ text: "Close", callback_data: buildCallbackData("schedule_close", "close") }],
+  ],
+});
+
+const buildInlineScheduleTimezoneKeyboard = () => ({
+  inline_keyboard: [
+    ...SCHEDULE_TIMEZONE_OPTIONS.map((timezone, index) => [
+      {
+        text: timezone.label,
+        callback_data: buildCallbackData("schedule_timezone", String(index)),
+      },
+    ]),
+    [
+      {
+        text: "Manual Timezone",
+        callback_data: buildCallbackData("schedule_timezone_manual", "manual"),
+      },
+    ],
+    [{ text: "Close", callback_data: buildCallbackData("schedule_close", "close") }],
+  ],
+});
+
+const buildInlineScheduleTimerKeyboard = () => ({
+  inline_keyboard: [
+    ...SCHEDULE_TIMER_OPTIONS.map((hours) => [
+      {
+        text: `${hours} Hrs`,
+        callback_data: buildCallbackData("schedule_timer", String(hours)),
+      },
+    ]),
+    [{ text: "Close", callback_data: buildCallbackData("schedule_close", "close") }],
+  ],
+});
 
 const buildSuggestedObjectiveKeyboard = (objectives = []) => {
   const rows = objectives.map((objective) => [
@@ -458,6 +776,207 @@ const extractCreateObjectiveSelection = (message, objectives = []) => {
   return matchObjectiveFromMessage(message, objectives);
 };
 
+const extractTaskAndKeyResultInput = (message) => {
+  const normalized = String(message || "").trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const pipeParts = normalized.split("|").map((part) => part.trim()).filter(Boolean);
+
+  if (pipeParts.length >= 2) {
+    return {
+      taskName: pipeParts[0].replace(/^task\s*:?\s*/i, "").trim(),
+      departmentKeyResult: pipeParts
+        .slice(1)
+        .join(" | ")
+        .replace(/^key\s*result\s*:?\s*/i, "")
+        .trim(),
+    };
+  }
+
+  const taskMatch = normalized.match(/task\s*:?\s*(.+?)(?:\s+key\s*result\s*:?\s*|\s*\|\s*|$)/i);
+  const keyResultMatch = normalized.match(/key\s*result\s*:?\s*(.+)$/i);
+
+  const taskName = taskMatch?.[1]?.trim() || "";
+  const departmentKeyResult = keyResultMatch?.[1]?.trim() || "";
+
+  if (!taskName || !departmentKeyResult) {
+    return null;
+  }
+
+  return {
+    taskName,
+    departmentKeyResult,
+  };
+};
+
+const isScheduleAffirmative = (message) => {
+  const normalized = String(message || "").trim().toLowerCase();
+  return ["yes", "y", "yes please", "setup", "set up", "update", "ok", "okay"].includes(normalized);
+};
+
+const extractScheduleTimeInput = (message) => {
+  const normalized = String(message || "").trim();
+
+  if (/^\d{2}:\d{2}:\d{2}$/.test(normalized)) {
+    return normalized;
+  }
+
+  if (/^\d{1,2}:\d{2}$/.test(normalized)) {
+    const [hours, minutes] = normalized.split(":");
+    return toTwentyFourHourTime(hours, minutes, 0);
+  }
+
+  const amPmWithMinutes = normalized.match(
+    /^(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*([AaPp][Mm])$/
+  );
+
+  if (amPmWithMinutes) {
+    const [, hours, minutes = "00", seconds = "00", meridiem] = amPmWithMinutes;
+    return toTwentyFourHourTime(hours, minutes, seconds, meridiem);
+  }
+
+  const hourWithMeridiem = normalized.match(/^(\d{1,2})\s*([AaPp][Mm])$/);
+
+  if (hourWithMeridiem) {
+    const [, hours, meridiem] = hourWithMeridiem;
+    return toTwentyFourHourTime(hours, 0, 0, meridiem);
+  }
+
+  return null;
+};
+
+const extractTimezoneInput = (message) => {
+  const normalized = String(message || "").trim();
+  if (!normalized.includes("/")) {
+    return null;
+  }
+
+  return normalized;
+};
+
+const normalizeLooseText = (message) => {
+  return String(message || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ");
+};
+
+const isScheduleIntentMessage = (message) => {
+  const normalized = normalizeLooseText(message);
+  const hasScheduleWord =
+    normalized.includes("schedule") ||
+    normalized.includes("scedule") ||
+    normalized.includes("schedul");
+  const hasMeetingWord = normalized.includes("meeting");
+  const hasTimeWord =
+    normalized.includes("time") ||
+    normalized.includes("timer") ||
+    normalized.includes("timing");
+  const hasScoreWord = normalized.includes("score");
+  const hasSetupWord =
+    normalized.includes("setup") ||
+    normalized.includes("set up") ||
+    normalized.includes("configure") ||
+    normalized.includes("update");
+
+  return (
+    hasScheduleWord ||
+    normalized.includes("score management") ||
+    normalized.includes("score schedule") ||
+    normalized.includes("weekly meeting") ||
+    (hasMeetingWord && hasTimeWord) ||
+    (hasMeetingWord && hasSetupWord) ||
+    (hasScoreWord && hasTimeWord)
+  );
+};
+
+const isScheduleSetupIntentMessage = (message) => {
+  const normalized = normalizeLooseText(message);
+
+  const setupKeywords = [
+    "set up",
+    "setup",
+    "create",
+    "configure",
+    "change",
+    "update",
+    "edit",
+  ];
+
+  return (
+    isScheduleIntentMessage(normalized) &&
+    setupKeywords.some((keyword) => normalized.includes(keyword))
+  );
+};
+
+const isScheduleViewIntentMessage = (message) => {
+  const normalized = normalizeLooseText(message);
+
+  const viewKeywords = [
+    "what",
+    "show",
+    "view",
+    "get",
+    "when",
+    "time",
+    "details",
+  ];
+
+  return (
+    isScheduleIntentMessage(normalized) &&
+    (viewKeywords.some((keyword) => normalized.includes(keyword)) ||
+      (normalized.includes("meeting") && normalized.includes("take place")))
+  );
+};
+
+const padTimePart = (value) => String(value).padStart(2, "0");
+
+const toTwentyFourHourTime = (hours, minutes = 0, seconds = 0, meridiem = "") => {
+  let normalizedHours = Number(hours);
+  const normalizedMinutes = Number(minutes);
+  const normalizedSeconds = Number(seconds);
+  const normalizedMeridiem = String(meridiem || "").trim().toLowerCase();
+
+  if (
+    Number.isNaN(normalizedHours) ||
+    Number.isNaN(normalizedMinutes) ||
+    Number.isNaN(normalizedSeconds)
+  ) {
+    return null;
+  }
+
+  if (normalizedMeridiem) {
+    if (normalizedHours < 1 || normalizedHours > 12) {
+      return null;
+    }
+
+    if (normalizedMeridiem === "pm" && normalizedHours !== 12) {
+      normalizedHours += 12;
+    }
+
+    if (normalizedMeridiem === "am" && normalizedHours === 12) {
+      normalizedHours = 0;
+    }
+  }
+
+  if (
+    normalizedHours < 0 ||
+    normalizedHours > 23 ||
+    normalizedMinutes < 0 ||
+    normalizedMinutes > 59 ||
+    normalizedSeconds < 0 ||
+    normalizedSeconds > 59
+  ) {
+    return null;
+  }
+
+  return `${padTimePart(normalizedHours)}:${padTimePart(normalizedMinutes)}:${padTimePart(normalizedSeconds)}`;
+};
+
 const buildConversationContext = (history = []) => {
   const trimmedHistory = history.slice(-MAX_HISTORY_ITEMS);
 
@@ -479,7 +998,7 @@ const buildPlannerMessages = ({ message, session, history }) => {
         "",
         "You are an intent planner for this bot.",
         "Return only valid JSON.",
-        "Pick one action from: create_objective, create_department_objective, create_bulk_objectives, get_department_objectives, create_department_task_key_result, create_key_result, update_objective_progress, get_objectives, get_profile, get_departments, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
+        "Pick one action from: create_objective, create_department_objective, create_bulk_objectives, get_department_objectives, create_department_task_key_result, create_key_result, update_objective_progress, get_objectives, get_profile, get_profile_details, get_departments, get_current_department, get_current_department_objectives, get_department_objective_key_results, get_dashboard_year_filters, get_dashboard_objective_growth, get_dashboard_department_growth, get_dashboard_yearly_growth, get_schedule_details, update_schedule_details, get_score_edit_status, strategy_advice, department_alignment, send_help, ask_clarification, general_reply.",
         "Schema:",
         '{',
         '  "action": "string",',
@@ -498,6 +1017,13 @@ const buildPlannerMessages = ({ message, session, history }) => {
         '  "taskName": "string",',
         '  "departmentKeyResult": "string",',
         '  "departmentObjectiveId": "string",',
+        '  "departmentObjectiveName": "string",',
+        '  "year": "string",',
+        '  "quarter": "string",',
+        '  "dayName": "string",',
+        '  "meetingTime": "string",',
+        '  "timezone": "string",',
+        '  "timeSlotHoursBeforeMeeting": "string",',
         '  "organizationObjectives": [{"objectiveName":"string","description":"string"}],',
         '  "departmentObjectives": [{"departmentObjective":"string","description":"string","organizationObjectiveId":"string","organizationObjective":"string","objectiveName":"string"}],',
         '  "reply": "string"',
@@ -511,6 +1037,9 @@ const buildPlannerMessages = ({ message, session, history }) => {
         'For create_bulk_objectives, fill organizationObjectives and/or departmentObjectives arrays.',
         'For get_department_objectives, optionally accept departmentId to filter by department.',
         'For create_department_task_key_result, require departmentObjectiveId (or find it from the department objective name), taskName, and departmentKeyResult.',
+        'For get_department_objective_key_results, provide departmentObjectiveId when possible, otherwise use departmentObjectiveName.',
+        'For dashboard stat actions, fill year and quarter when the user mentions them.',
+        'For update_schedule_details, require dayName, meetingTime in HH:mm:ss, timezone, and timeSlotHoursBeforeMeeting.',
         'Use strategy_advice for broad OKR/business-growth guidance.',
         'Use department_alignment when the user wants department objectives or department-wise breakdown from a company/organization objective.',
       ].join("\n"),
@@ -519,6 +1048,7 @@ const buildPlannerMessages = ({ message, session, history }) => {
       role: "user",
       content: [
         `Authenticated: ${session?.token ? "yes" : "no"}`,
+        `Session role: ${session?.role || "unknown"}`,
         `Backend base URL: ${config.apiBaseUrl}`,
         "Recent conversation:",
         buildConversationContext(history),
@@ -656,6 +1186,24 @@ const normalizeStructuredDepartmentPlan = (plan) => {
       keyResults: normalizeKeyResultItems(item?.keyResults),
     }))
     .filter((item) => item.departmentObjective)
+    .slice(0, 5);
+};
+
+const normalizeStructuredDepartmentTaskPlan = (plan) => {
+  const items = Array.isArray(plan?.taskKeyResults)
+    ? plan.taskKeyResults
+    : [];
+
+  return items
+    .map((item, index) => ({
+      id: `t${index + 1}`,
+      taskName: String(item?.taskName || item?.task || "").trim(),
+      departmentKeyResult: String(
+        item?.departmentKeyResult || item?.keyResult || item?.key_result || ""
+      ).trim(),
+      description: String(item?.description || "").trim(),
+    }))
+    .filter((item) => item.taskName && item.departmentKeyResult)
     .slice(0, 5);
 };
 
@@ -804,6 +1352,66 @@ const generateStructuredDepartmentPlan = async (
   return normalizeStructuredDepartmentPlan(parsed);
 };
 
+const generateStructuredDepartmentTaskPlan = async (
+  token,
+  departmentObjectiveName,
+  departmentName = ""
+) => {
+  const { profile, departments } = await loadStrategyContext(token);
+  const response = await chatWithModel({
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are an OKR task and key-result planner for a department objective.",
+          "Return only valid JSON.",
+          "Propose exactly 3 practical task and key-result pairs for the selected department objective.",
+          "Each task must be concrete and execution-focused.",
+          "Each key result must be measurable and outcome-focused.",
+          "Do not include markdown or extra text outside JSON.",
+          "Schema:",
+          "{",
+          '  "taskKeyResults": [',
+          "    {",
+          '      "taskName": "string",',
+          '      "departmentKeyResult": "string",',
+          '      "description": "string"',
+          "    }",
+          "  ]",
+          "}",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `Department objective: ${departmentObjectiveName}`,
+          `Department: ${departmentName || "-"}`,
+          "",
+          "Organization profile:",
+          [
+            `Company: ${profile?.companyName || "-"}`,
+            `Organization name: ${profile?.fullName || "-"}`,
+            `About: ${profile?.aboutCompany || "-"}`,
+            `Mission: ${profile?.companyMission || "-"}`,
+            `Vision: ${profile?.companyVision || "-"}`,
+          ].join("\n"),
+          "",
+          "Known departments:",
+          departments
+            .map((department, index) => {
+              return `${index + 1}. ${department.departmentName || "-"} (${department.fullName || "No owner"})`;
+            })
+            .join("\n"),
+        ].join("\n"),
+      },
+    ],
+    format: "json",
+  });
+
+  const parsed = parseJson(response.message?.content || "{}");
+  return normalizeStructuredDepartmentTaskPlan(parsed);
+};
+
 const formatStructuredStrategyAdvice = ({
   organizationObjectives,
   departments,
@@ -883,6 +1491,30 @@ const formatStructuredDepartmentAdvice = ({
 
   lines.push("");
   lines.push("Use the buttons below to create one or all of these department objectives.");
+
+  return lines.join("\n");
+};
+
+const formatStructuredDepartmentTaskAdvice = ({
+  departmentObjectiveName,
+  departmentName,
+  taskKeyResults,
+}) => {
+  if (!taskKeyResults.length) {
+    return `I could not generate task and key-result suggestions for ${departmentObjectiveName} right now.`;
+  }
+
+  const lines = [
+    `Selected department objective: ${departmentObjectiveName}`,
+    `Department: ${departmentName || "-"}`,
+    "",
+    "Suggested task and key-result pairs:",
+    ...taskKeyResults.map((item, index) => (
+      `${index + 1}. ${item.taskName} -> ${item.departmentKeyResult}`
+    )),
+    "",
+    "Use the buttons below to create one, create all, or switch to manual entry.",
+  ];
 
   return lines.join("\n");
 };
@@ -1413,6 +2045,17 @@ const executeAction = async ({ plan, session }) => {
       };
     }
 
+    case "get_profile_details": {
+      const response = await getProfileDetails(session.token, session.role);
+
+      return {
+        success: true,
+        action: "get_profile_details",
+        profileDetails: response.data.data,
+        summary: formatProfileDetails(response.data.data),
+      };
+    }
+
     case "get_departments": {
       const response = await getDepartments(session.token);
       const departments =
@@ -1423,6 +2066,230 @@ const executeAction = async ({ plan, session }) => {
         action: "get_departments",
         departments,
         summary: formatDepartments(departments),
+      };
+    }
+
+    case "get_current_department": {
+      const response = await getCurrentDepartment(session.token);
+
+      return {
+        success: true,
+        action: "get_current_department",
+        department: response.data.data,
+        summary: formatCurrentDepartment(response.data.data),
+      };
+    }
+
+    case "get_current_department_objectives": {
+      const response = await getCurrentDepartmentObjectives(session.token);
+      const departmentObjectives =
+        response.data.data.departmentObjectives ||
+        response.data.data.objectives ||
+        response.data.data ||
+        [];
+
+      return {
+        success: true,
+        action: "get_current_department_objectives",
+        departmentObjectives,
+        summary: formatDepartmentObjectives(
+          Array.isArray(departmentObjectives) ? departmentObjectives : []
+        ),
+      };
+    }
+
+    case "get_department_objective_key_results": {
+      const departmentObjective = await findDepartmentObjective(
+        session.token,
+        plan
+      );
+
+      if (!departmentObjective) {
+        return {
+          success: false,
+          action: "get_department_objective_key_results",
+          summary:
+            "I could not find that department objective. Please send the exact department objective name first.",
+        };
+      }
+
+      const departmentObjectiveId =
+        departmentObjective.id ||
+        departmentObjective._id ||
+        departmentObjective.departmentObjectiveId;
+      const response = await getDepartmentObjectiveKeyResults(
+        session.token,
+        departmentObjectiveId,
+        session.role
+      );
+      const items =
+        response.data.data.keyResults ||
+        response.data.data.tasks ||
+        response.data.data ||
+        [];
+
+      return {
+        success: true,
+        action: "get_department_objective_key_results",
+        keyResults: items,
+        summary: formatDepartmentObjectiveKeyResults(
+          Array.isArray(items) ? items : []
+        ),
+      };
+    }
+
+    case "get_dashboard_year_filters": {
+      const response = await getYearFilters(session.token, session.role);
+
+      return {
+        success: true,
+        action: "get_dashboard_year_filters",
+        data: response.data.data,
+        summary: formatDashboardStats("Dashboard year filters", response.data.data),
+      };
+    }
+
+    case "get_dashboard_objective_growth": {
+      if (!plan.year || !plan.quarter) {
+        return {
+          success: false,
+          action: "get_dashboard_objective_growth",
+          summary: "Please provide both year and quarter, for example 2025-26 quarter 2.",
+        };
+      }
+
+      const response = await getObjectiveGrowth(session.token, {
+        year: plan.year,
+        quarter: plan.quarter,
+        role: session.role,
+      });
+
+      return {
+        success: true,
+        action: "get_dashboard_objective_growth",
+        data: response.data.data,
+        summary: formatDashboardStats(
+          `Objective growth for ${plan.year} Q${plan.quarter}`,
+          response.data.data
+        ),
+      };
+    }
+
+    case "get_dashboard_department_growth": {
+      if (!plan.year || !plan.quarter) {
+        return {
+          success: false,
+          action: "get_dashboard_department_growth",
+          summary: "Please provide both year and quarter, for example 2025-26 quarter 2.",
+        };
+      }
+
+      const response = await getDepartmentGrowth(session.token, {
+        year: plan.year,
+        quarter: plan.quarter,
+      });
+
+      return {
+        success: true,
+        action: "get_dashboard_department_growth",
+        data: response.data.data,
+        summary: formatDashboardStats(
+          `Department growth for ${plan.year} Q${plan.quarter}`,
+          response.data.data
+        ),
+      };
+    }
+
+    case "get_dashboard_yearly_growth": {
+      if (!plan.year) {
+        return {
+          success: false,
+          action: "get_dashboard_yearly_growth",
+          summary: "Please provide the year, for example 2025-26.",
+        };
+      }
+
+      const response = await getYearlyGrowth(session.token, {
+        year: plan.year,
+        role: session.role,
+      });
+
+      return {
+        success: true,
+        action: "get_dashboard_yearly_growth",
+        data: response.data.data,
+        summary: formatDashboardStats(
+          `Yearly growth for ${plan.year}`,
+          response.data.data
+        ),
+      };
+    }
+
+    case "get_schedule_details": {
+      const response = await getScheduleDetails(session.token);
+      const scheduleDetails = response.data.data.scheuleDetails || response.data.data || {};
+      const hasSchedule = Boolean(Object.keys(scheduleDetails).length);
+
+      return {
+        success: true,
+        action: "get_schedule_details",
+        scheduleDetails,
+        hasSchedule,
+        summary: hasSchedule
+          ? formatScheduleDetails(scheduleDetails)
+          : [
+              formatScheduleDetails(scheduleDetails),
+              "",
+              "Would you like to set it up now?",
+            ].join("\n"),
+      };
+    }
+
+    case "update_schedule_details": {
+      if (
+        !plan.dayName ||
+        !plan.meetingTime ||
+        !plan.timezone ||
+        !plan.timeSlotHoursBeforeMeeting
+      ) {
+        return {
+          success: false,
+          action: "update_schedule_details",
+          summary:
+            "Please provide day, meeting time, timezone, and timer hours before meeting. Example: Tuesday 14:30:00 Asia/Kolkata 24 hours before.",
+        };
+      }
+
+      const response = await updateScheduleDetails(session.token, {
+        dayName: plan.dayName,
+        meetingTime: plan.meetingTime,
+        timezone: plan.timezone,
+        timeSlotHoursBeforeMeeting: Number(plan.timeSlotHoursBeforeMeeting),
+      });
+      const scheduleDetails = response.data.data.scheuleDetails || response.data.data || {};
+
+      return {
+        success: true,
+        action: "update_schedule_details",
+        scheduleDetails,
+        summary: [
+          "Score-management schedule updated successfully.",
+          "",
+          formatScheduleDetails(scheduleDetails),
+        ].join("\n"),
+      };
+    }
+
+    case "get_score_edit_status": {
+      const response = await getScoreEditStatus(session.token);
+      const scoreEditDetails =
+        response.data.data.scoreEditDetails || response.data.data || {};
+
+      return {
+        success: true,
+        action: "get_score_edit_status",
+        scoreEditDetails,
+        summary: formatScoreEditStatus(scoreEditDetails),
       };
     }
 
@@ -1450,11 +2317,18 @@ const normalizePlan = (plan) => {
     departmentId: plan.departmentId || "",
     taskName: plan.taskName || "",
     departmentKeyResult: plan.departmentKeyResult || "",
+    departmentObjectiveName: plan.departmentObjectiveName || "",
     keyResultName: plan.keyResultName || "",
     targetValue: plan.targetValue || "",
     startValue: plan.startValue || "",
     currentValue: plan.currentValue || "",
     progressValue: plan.progressValue || "",
+    year: plan.year || "",
+    quarter: plan.quarter || "",
+    dayName: plan.dayName || "",
+    meetingTime: plan.meetingTime || "",
+    timezone: plan.timezone || "",
+    timeSlotHoursBeforeMeeting: plan.timeSlotHoursBeforeMeeting || "",
     description: plan.description || "",
     organizationObjective: plan.organizationObjective || "",
     organizationObjectives: Array.isArray(plan.organizationObjectives)
@@ -1475,6 +2349,57 @@ const findObjective = async (token, plan) => {
     objectives,
     plan.objectiveId,
     plan.objectiveName
+  );
+};
+
+const findDepartmentObjective = async (token, plan) => {
+  const response = plan.departmentId
+    ? await getDepartmentObjectivesForDepartment(
+        token,
+        plan.departmentId,
+        plan.role || "MANAGEMENT"
+      )
+    : await getDepartmentObjectives(token, plan.departmentId || "");
+  const departmentObjectives =
+    response.data.data.departmentObjectives ||
+    response.data.data.departments ||
+    response.data.data ||
+    [];
+  const normalizedName = String(
+    plan.departmentObjectiveName || plan.departmentObjective || plan.objectiveName || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (plan.departmentObjectiveId) {
+    const byId = departmentObjectives.find((item) => {
+      const id = item.id || item._id || item.departmentObjectiveId;
+      return String(id) === String(plan.departmentObjectiveId);
+    });
+
+    if (byId) {
+      return byId;
+    }
+  }
+
+  if (!normalizedName) {
+    return null;
+  }
+
+  return (
+    departmentObjectives.find((item) => {
+      const value = String(item.objective || item.departmentObjective || "")
+        .trim()
+        .toLowerCase();
+      return value === normalizedName;
+    }) ||
+    departmentObjectives.find((item) => {
+      const value = String(item.objective || item.departmentObjective || "")
+        .trim()
+        .toLowerCase();
+      return value.includes(normalizedName);
+    }) ||
+    null
   );
 };
 
@@ -1635,8 +2560,262 @@ const generateDepartmentSpecificAlignment = async (
   };
 };
 
+const generateDepartmentTaskSuggestions = async (
+  token,
+  departmentObjectiveName,
+  departmentName
+) => {
+  const taskKeyResults = await generateStructuredDepartmentTaskPlan(
+    token,
+    departmentObjectiveName,
+    departmentName
+  );
+
+  return {
+    text: formatStructuredDepartmentTaskAdvice({
+      departmentObjectiveName,
+      departmentName,
+      taskKeyResults,
+    }),
+    taskKeyResults,
+  };
+};
+
+const clearScheduleFlowState = {
+  scheduleFlowMode: "",
+  pendingScheduleDayName: "",
+  pendingScheduleTimezone: "",
+  pendingScheduleTimerHours: "",
+  awaitingScheduleTimeInput: false,
+  awaitingScheduleTimezoneInput: false,
+  awaitingScheduleSetupConfirmation: false,
+  promptedForScheduleSetup: false,
+};
+
 const runAgent = async ({ message, session, history }) => {
   const callbackSelection = parseCallbackData(message);
+
+  if (session?.awaitingScheduleSetupConfirmation && isScheduleAffirmative(message)) {
+    return {
+      text: "Let's set up your score-management schedule. First, choose the meeting day.",
+      replyMarkup: buildInlineScheduleDayKeyboard(),
+      sessionUpdates: {
+        ...clearScheduleFlowState,
+        scheduleFlowMode: "setup",
+      },
+    };
+  }
+
+  if (isScheduleAffirmative(message) && session?.promptedForScheduleSetup) {
+    return {
+      text: "Let's set up your score-management schedule. First, choose the meeting day.",
+      replyMarkup: buildInlineScheduleDayKeyboard(),
+      sessionUpdates: {
+        ...clearScheduleFlowState,
+        scheduleFlowMode: "setup",
+        promptedForScheduleSetup: false,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "schedule_start_setup" || callbackSelection?.action === "schedule_start_update") {
+    const flowMode =
+      callbackSelection.action === "schedule_start_update" ? "update" : "setup";
+
+    return {
+      text: `Let's ${flowMode} your score-management schedule. First, choose the meeting day.`,
+      clearSourceReplyMarkup: true,
+      replyMarkup: buildInlineScheduleDayKeyboard(),
+      sessionUpdates: {
+        ...clearScheduleFlowState,
+        scheduleFlowMode: flowMode,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "schedule_show_current") {
+    const response = await getScheduleDetails(session.token);
+    const scheduleDetails = response.data.data.scheuleDetails || response.data.data || {};
+
+    return {
+      text: formatScheduleDetails(scheduleDetails),
+      clearSourceReplyMarkup: true,
+      replyMarkup: buildInlineScheduleActionKeyboard(
+        Boolean(Object.keys(scheduleDetails).length)
+      ),
+      sessionUpdates: {
+        awaitingScheduleSetupConfirmation: false,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "schedule_day") {
+    const selectedDay = SCHEDULE_DAYS[Number(callbackSelection.args[0])];
+
+    if (!selectedDay) {
+      return {
+        text: "I could not read that day selection. Please try again.",
+      };
+    }
+
+    return {
+      text: `Selected day: ${selectedDay}.\n\nNow choose the timezone.`,
+      clearSourceReplyMarkup: true,
+      replyMarkup: buildInlineScheduleTimezoneKeyboard(),
+      sessionUpdates: {
+        pendingScheduleDayName: selectedDay,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "schedule_timezone") {
+    const timezoneOption =
+      SCHEDULE_TIMEZONE_OPTIONS[Number(callbackSelection.args[0])];
+
+    if (!timezoneOption) {
+      return {
+        text: "I could not read that timezone selection. Please try again.",
+      };
+    }
+
+    return {
+      text: `Selected timezone: ${timezoneOption.value}.\n\nNow choose how many hours before the meeting score updates should close.`,
+      clearSourceReplyMarkup: true,
+      replyMarkup: buildInlineScheduleTimerKeyboard(),
+      sessionUpdates: {
+        pendingScheduleTimezone: timezoneOption.value,
+        awaitingScheduleTimezoneInput: false,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "schedule_timezone_manual") {
+    return {
+      text: "Send your timezone in IANA format, for example: Asia/Kolkata",
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        awaitingScheduleTimezoneInput: true,
+      },
+    };
+  }
+
+  if (session?.awaitingScheduleTimezoneInput) {
+    const timezone = extractTimezoneInput(message);
+
+    if (!timezone) {
+      return {
+        text: "Please send a valid timezone like Asia/Kolkata.",
+      };
+    }
+
+    return {
+      text: `Selected timezone: ${timezone}.\n\nNow choose how many hours before the meeting score updates should close.`,
+      replyMarkup: buildInlineScheduleTimerKeyboard(),
+      sessionUpdates: {
+        pendingScheduleTimezone: timezone,
+        awaitingScheduleTimezoneInput: false,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "schedule_timer") {
+    const timerHours = String(callbackSelection.args[0] || "").trim();
+
+    if (!timerHours) {
+      return {
+        text: "I could not read that timer selection. Please try again.",
+      };
+    }
+
+    return {
+      text: [
+        `Selected timer: ${timerHours} hours before meeting.`,
+        "",
+        "Now send the meeting time.",
+        "Accepted formats: 14:30:00, 14:30, 2:30 PM, 2 PM",
+      ].join("\n"),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        pendingScheduleTimerHours: timerHours,
+        awaitingScheduleTimeInput: true,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "schedule_close") {
+    return {
+      text: "Closed the schedule setup flow.",
+      clearSourceReplyMarkup: true,
+      sessionUpdates: clearScheduleFlowState,
+    };
+  }
+
+  if (session?.awaitingScheduleTimeInput) {
+    const meetingTime = extractScheduleTimeInput(message);
+
+    if (!meetingTime) {
+      return {
+        text:
+          "Please send a valid meeting time. Accepted formats: 14:30:00, 14:30, 2:30 PM, 2 PM",
+      };
+    }
+
+    const toolResult = await executeAction({
+      plan: {
+        action: "update_schedule_details",
+        dayName: session.pendingScheduleDayName,
+        meetingTime,
+        timezone: session.pendingScheduleTimezone,
+        timeSlotHoursBeforeMeeting: session.pendingScheduleTimerHours,
+      },
+      session,
+    });
+
+    return {
+      text: toolResult.summary || "Schedule updated successfully.",
+      sessionUpdates: clearScheduleFlowState,
+    };
+  }
+
+  if (isScheduleSetupIntentMessage(message)) {
+    const scheduleResponse = await getScheduleDetails(session.token);
+    const scheduleDetails =
+      scheduleResponse.data.data.scheuleDetails || scheduleResponse.data.data || {};
+    const hasExistingSchedule = Boolean(Object.keys(scheduleDetails).length);
+
+    return {
+      text: hasExistingSchedule
+        ? "I understood that you want to update your meeting schedule. Use the buttons below to continue."
+        : "I understood that you want to set up your meeting schedule. Use the buttons below to continue.",
+      replyMarkup: buildInlineScheduleActionKeyboard(hasExistingSchedule),
+      sessionUpdates: {
+        awaitingScheduleSetupConfirmation: !hasExistingSchedule,
+        promptedForScheduleSetup: !hasExistingSchedule,
+      },
+    };
+  }
+
+  if (isScheduleViewIntentMessage(message)) {
+    const scheduleResponse = await getScheduleDetails(session.token);
+    const scheduleDetails =
+      scheduleResponse.data.data.scheuleDetails || scheduleResponse.data.data || {};
+    const hasExistingSchedule = Boolean(Object.keys(scheduleDetails).length);
+
+    return {
+      text: hasExistingSchedule
+        ? formatScheduleDetails(scheduleDetails)
+        : [
+            formatScheduleDetails(scheduleDetails),
+            "",
+            "Use the buttons below if you want to set it up now.",
+          ].join("\n"),
+      replyMarkup: buildInlineScheduleActionKeyboard(hasExistingSchedule),
+      sessionUpdates: {
+        awaitingScheduleSetupConfirmation: !hasExistingSchedule,
+        promptedForScheduleSetup: !hasExistingSchedule,
+      },
+    };
+  }
 
   if (callbackSelection?.action === "select_org_for_dept") {
     const [objectiveId] = callbackSelection.args;
@@ -1722,6 +2901,73 @@ const runAgent = async ({ message, session, history }) => {
         selectedDepartmentName: departmentName,
         pendingDepartmentOptions: [],
         suggestedDepartmentObjectives: departmentPlan.departmentObjectives,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "select_dept_for_task_kr") {
+    const [departmentIndexValue] = callbackSelection.args;
+    const departmentIndex = Number(departmentIndexValue);
+    const selectedDepartmentOption = Array.isArray(session?.pendingDepartmentOptions)
+      ? session.pendingDepartmentOptions[departmentIndex]
+      : null;
+    const selectedDepartment = selectedDepartmentOption?.id
+      ? await getDepartmentById(session.token, selectedDepartmentOption.id)
+      : null;
+
+    if (!selectedDepartment) {
+      return {
+        text: "I could not find that department anymore. Please try again.",
+      };
+    }
+
+    const selectedDepartmentId =
+      selectedDepartment.id ||
+      selectedDepartment._id ||
+      selectedDepartment.departmentId;
+    const selectedDepartmentName = getDepartmentDisplayName(selectedDepartment);
+    const departmentObjectivesResponse =
+      await getDepartmentObjectivesForDepartment(
+        session.token,
+        selectedDepartmentId,
+        session.role
+      );
+    const departmentObjectives =
+      departmentObjectivesResponse.data.data.departmentObjectives ||
+      departmentObjectivesResponse.data.data.departments ||
+      departmentObjectivesResponse.data.data ||
+      [];
+
+    if (!Array.isArray(departmentObjectives) || !departmentObjectives.length) {
+      return {
+        text: `No department objectives found for ${selectedDepartmentName}. Create a department objective first, then come back to task and key result creation.`,
+        clearSourceReplyMarkup: true,
+        sessionUpdates: {
+          selectedDepartmentId: selectedDepartmentId || "",
+          selectedDepartmentName,
+          pendingDepartmentOptions: [],
+          pendingDepartmentObjectiveId: "",
+          pendingDepartmentObjectiveName: "",
+          suggestedTaskKeyResults: [],
+          awaitingTaskKeyResultInput: false,
+        },
+      };
+    }
+
+    return {
+      text: `Selected department: ${selectedDepartmentName}\n\nNow choose the department objective below.`,
+      replyMarkup: buildInlineDepartmentObjectiveTaskKeyboard(
+        departmentObjectives
+      ),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        selectedDepartmentId: selectedDepartmentId || "",
+        selectedDepartmentName,
+        pendingDepartmentOptions: [],
+        pendingDepartmentObjectiveId: "",
+        pendingDepartmentObjectiveName: "",
+        suggestedTaskKeyResults: [],
+        awaitingTaskKeyResultInput: false,
       },
     };
   }
@@ -1817,9 +3063,224 @@ const runAgent = async ({ message, session, history }) => {
     };
   }
 
+  if (callbackSelection?.action === "select_dept_obj_for_task_kr") {
+    const [departmentObjectiveId] = callbackSelection.args;
+    const selectedDepartmentObjective = await findDepartmentObjective(
+      session.token,
+      {
+        departmentObjectiveId,
+        departmentId: session?.selectedDepartmentId || "",
+        role: session?.role || "MANAGEMENT",
+      }
+    );
+
+    if (!selectedDepartmentObjective) {
+      return {
+        text: "I could not find that department objective anymore. Please try again.",
+      };
+    }
+
+    const selectedName =
+      selectedDepartmentObjective.objective ||
+      selectedDepartmentObjective.departmentObjective ||
+      "Department objective";
+    const suggestionPlan = await generateDepartmentTaskSuggestions(
+      session.token,
+      selectedName,
+      session?.selectedDepartmentName || ""
+    );
+
+    return {
+      text: suggestionPlan.text,
+      replyMarkup: buildInlineSuggestedTaskKeyResultKeyboard(
+        suggestionPlan.taskKeyResults
+      ),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        pendingDepartmentObjectiveId:
+          selectedDepartmentObjective.id ||
+          selectedDepartmentObjective._id ||
+          selectedDepartmentObjective.departmentObjectiveId,
+        pendingDepartmentObjectiveName: selectedName,
+        awaitingTaskKeyResultInput: false,
+        suggestedTaskKeyResults: suggestionPlan.taskKeyResults,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "manual_task_kr_entry") {
+    return {
+      text: [
+        `Selected department objective: ${session?.pendingDepartmentObjectiveName || "the selected department objective"}`,
+        "",
+        "Now send the task and key result in one message.",
+        "Format: task name | key result",
+        "Example: Prepare onboarding checklist | Complete onboarding checklist for 100% of new hires",
+      ].join("\n"),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        awaitingTaskKeyResultInput: true,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "create_suggested_task_kr") {
+    const [indexValue] = callbackSelection.args;
+    const selectedIndex = Number(indexValue);
+    const suggestedTaskKeyResults = Array.isArray(session?.suggestedTaskKeyResults)
+      ? session.suggestedTaskKeyResults
+      : [];
+    const selectedItem = suggestedTaskKeyResults[selectedIndex];
+
+    if (!selectedItem || !session?.pendingDepartmentObjectiveId) {
+      return {
+        text: "I could not find that suggested task and key result anymore. Please generate them again.",
+      };
+    }
+
+    const toolResult = await executeAction({
+      plan: {
+        action: "create_department_task_key_result",
+        departmentObjectiveId: session.pendingDepartmentObjectiveId,
+        taskName: selectedItem.taskName,
+        departmentKeyResult: selectedItem.departmentKeyResult,
+      },
+      session,
+    });
+
+    const remainingSuggestions = suggestedTaskKeyResults.filter(
+      (_, index) => index !== selectedIndex
+    );
+
+    return {
+      text: remainingSuggestions.length
+        ? `${toolResult.summary}\n\nYou can still create the remaining suggested task and key-result pairs below, or choose manual entry.`
+        : `${toolResult.summary}\n\nAll suggested task and key-result pairs have been handled for this flow.`,
+      clearSourceReplyMarkup: true,
+      ...(remainingSuggestions.length
+        ? {
+            replyMarkup: buildInlineSuggestedTaskKeyResultKeyboard(
+              remainingSuggestions
+            ),
+          }
+        : {}),
+      sessionUpdates: {
+        suggestedTaskKeyResults: remainingSuggestions,
+        awaitingTaskKeyResultInput: false,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "create_all_suggested_task_kr") {
+    const suggestedTaskKeyResults = Array.isArray(session?.suggestedTaskKeyResults)
+      ? session.suggestedTaskKeyResults
+      : [];
+
+    if (!suggestedTaskKeyResults.length || !session?.pendingDepartmentObjectiveId) {
+      return {
+        text: "I could not find the stored task and key-result suggestions. Please generate them again.",
+      };
+    }
+
+    for (const item of suggestedTaskKeyResults) {
+      await executeAction({
+        plan: {
+          action: "create_department_task_key_result",
+          departmentObjectiveId: session.pendingDepartmentObjectiveId,
+          taskName: item.taskName,
+          departmentKeyResult: item.departmentKeyResult,
+        },
+        session,
+      });
+    }
+
+    return {
+      text: `Created ${suggestedTaskKeyResults.length} task and key-result pairs for ${session.pendingDepartmentObjectiveName || "the selected department objective"}.`,
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        suggestedTaskKeyResults: [],
+        awaitingTaskKeyResultInput: false,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "close_task_kr_flow") {
+    return {
+      text: "Closed the task and key-result selection flow.",
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        pendingDepartmentObjectiveId: "",
+        pendingDepartmentObjectiveName: "",
+        awaitingTaskKeyResultInput: false,
+        suggestedTaskKeyResults: [],
+      },
+    };
+  }
+
+  if (session?.awaitingTaskKeyResultInput && session?.pendingDepartmentObjectiveId) {
+    const parsedTaskInput = extractTaskAndKeyResultInput(message);
+
+    if (!parsedTaskInput) {
+      return {
+        text: [
+          `You're creating a task and key result under: ${session.pendingDepartmentObjectiveName || "the selected department objective"}`,
+          "",
+          "Please send it in this format:",
+          "task name | key result",
+          "Example: Prepare onboarding checklist | Complete onboarding checklist for 100% of new hires",
+        ].join("\n"),
+      };
+    }
+
+    const toolResult = await executeAction({
+      plan: {
+        action: "create_department_task_key_result",
+        departmentObjectiveId: session.pendingDepartmentObjectiveId,
+        taskName: parsedTaskInput.taskName,
+        departmentKeyResult: parsedTaskInput.departmentKeyResult,
+      },
+      session,
+    });
+
+    return {
+      text: toolResult.summary || "Done.",
+      sessionUpdates: {
+        pendingDepartmentObjectiveId: "",
+        pendingDepartmentObjectiveName: "",
+        awaitingTaskKeyResultInput: false,
+        suggestedTaskKeyResults: [],
+      },
+    };
+  }
+
   const currentObjectivesResponse = await getObjectives(session.token);
   const currentObjectives =
     currentObjectivesResponse.data.data.objectives || [];
+  const normalizedMessage = String(message || "").trim().toLowerCase();
+
+  if (
+    normalizedMessage.includes("schedule") &&
+    (normalizedMessage.includes("set") ||
+      normalizedMessage.includes("setup") ||
+      normalizedMessage.includes("set up") ||
+      normalizedMessage.includes("update") ||
+      normalizedMessage.includes("meeting time"))
+  ) {
+    const scheduleResponse = await getScheduleDetails(session.token);
+    const scheduleDetails =
+      scheduleResponse.data.data.scheuleDetails || scheduleResponse.data.data || {};
+    const hasExistingSchedule = Boolean(Object.keys(scheduleDetails).length);
+
+    return {
+      text: hasExistingSchedule
+        ? "You already have a score-management schedule. Use the buttons below to view or update it."
+        : "No score-management schedule is set yet. Use the buttons below to set it up.",
+      replyMarkup: buildInlineScheduleActionKeyboard(hasExistingSchedule),
+      sessionUpdates: {
+        awaitingScheduleSetupConfirmation: !hasExistingSchedule,
+      },
+    };
+  }
 
   const departmentObjectiveSelection = extractDepartmentObjectiveSelection(
     message,
@@ -1865,6 +3326,42 @@ const runAgent = async ({ message, session, history }) => {
     return {
       text: `Tell me the key result you want to add for objective: ${objective.objectiveName}`,
     };
+  }
+
+  const requestsTaskAndKeyResult =
+    normalizedMessage.includes("task") &&
+    (normalizedMessage.includes("key result") || normalizedMessage.includes("kr"));
+
+  if (
+    requestsTaskAndKeyResult &&
+    !String(normalizedMessage).includes("department objective:")
+  ) {
+    const departmentsResponse = await getDepartments(session.token);
+    const departments =
+      departmentsResponse.data.data.departments ||
+      departmentsResponse.data.data.departmentUsers ||
+      [];
+
+    if (Array.isArray(departments) && departments.length) {
+      const departmentOptions = buildDepartmentSessionOptions(departments);
+
+      return {
+        text: "Select the department first for task and key-result creation.",
+        replyMarkup: buildInlineDepartmentSelectionKeyboard(
+          departments,
+          "select_dept_for_task_kr"
+        ),
+        sessionUpdates: {
+          pendingDepartmentOptions: departmentOptions,
+          selectedDepartmentId: "",
+          selectedDepartmentName: "",
+          pendingDepartmentObjectiveId: "",
+          pendingDepartmentObjectiveName: "",
+          suggestedTaskKeyResults: [],
+          awaitingTaskKeyResultInput: false,
+        },
+      };
+    }
   }
 
   const createObjectiveSelection = extractCreateObjectiveSelection(
@@ -1994,6 +3491,29 @@ const runAgent = async ({ message, session, history }) => {
   }
 
   const toolResult = await executeAction({ plan, session });
+
+  if (toolResult.action === "get_schedule_details" && !toolResult.hasSchedule) {
+    return {
+      text: toolResult.summary,
+      replyMarkup: buildInlineScheduleActionKeyboard(false),
+      sessionUpdates: {
+        awaitingScheduleSetupConfirmation: true,
+        promptedForScheduleSetup: true,
+      },
+    };
+  }
+
+  if (toolResult.action === "get_schedule_details" && toolResult.hasSchedule) {
+    return {
+      text: toolResult.summary,
+      replyMarkup: buildInlineScheduleActionKeyboard(true),
+      sessionUpdates: {
+        awaitingScheduleSetupConfirmation: false,
+        promptedForScheduleSetup: false,
+      },
+    };
+  }
+
   const finalResponse = await chatWithModel({
     messages: buildFinalMessages({ message, plan, toolResult }),
   });

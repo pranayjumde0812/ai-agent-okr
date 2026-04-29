@@ -2,6 +2,7 @@ const {
   sendOtp,
   verifyOtp,
   signOut,
+  LOGIN_MODE,
 } = require("../services/auth.service");
 const {
   answerCallbackQuery,
@@ -12,8 +13,37 @@ const { runAgent, HELP_TEXT } = require("../services/agent.service");
 const sessionStore = require("../utils/session.store");
 const { isAuthExpiredError } = require("../utils/auth-error");
 
-const isEmailInput = (text) => text.includes("@");
-const isOtpInput = (text) => !Number.isNaN(Number(text));
+const extractEmailInput = (text) => {
+  const normalized = String(text || "").trim();
+  const emailMatch = normalized.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+
+  if (!emailMatch) {
+    return null;
+  }
+
+  const lowered = normalized.toLowerCase();
+  const loginMode = lowered.includes("department")
+    ? LOGIN_MODE.DEPARTMENT
+    : lowered.includes("management") || lowered.includes("organization")
+      ? LOGIN_MODE.ORGANIZATION
+      : "auto";
+
+  return {
+    email: emailMatch[0],
+    loginMode,
+  };
+};
+
+const extractOtpInput = (text) => {
+  const normalized = String(text || "").trim();
+
+  if (!/^\d{4,6}$/.test(normalized)) {
+    return null;
+  }
+
+  return Number(normalized);
+};
+
 const isHelpInput = (text) => ["/start", "start", "help", "/help"].includes(text.toLowerCase());
 const isLogoutInput = (text) => ["logout", "/logout", "sign out", "signout", "log out"].includes(text.toLowerCase());
 
@@ -56,6 +86,8 @@ const handleAI = async (req, res) => {
 
     const session = sessionStore.getSession(telegramUserId);
     const history = sessionStore.getHistory(telegramUserId);
+    const emailInput = extractEmailInput(text);
+    const otpInput = extractOtpInput(text);
     sessionStore.appendHistory(telegramUserId, "user", text);
 
     if (isHelpInput(text)) {
@@ -96,64 +128,91 @@ const handleAI = async (req, res) => {
       return res.sendStatus(200);
     }
 
-    if (session?.token && isEmailInput(text)) {
-      await sendMessage(telegramUserId, "You are already logged in ✅");
+    if (session?.token && emailInput) {
+      const roleLabel = session.role === "DEPARTMENT" ? "department" : "management";
+      await sendMessage(telegramUserId, `You are already logged in as a ${roleLabel} user ✅`);
       sessionStore.appendHistory(
         telegramUserId,
         "assistant",
-        "You are already logged in."
+        `You are already logged in as a ${roleLabel} user.`
       );
       return res.sendStatus(200);
     }
 
-    if (!session?.token && isEmailInput(text)) {
+    if (!session?.token && emailInput) {
       try {
-        await sendOtp(text);
-        sessionStore.setSession(telegramUserId, { email: text });
+        const authResult = await sendOtp(emailInput.email, emailInput.loginMode);
+        const loginMode = authResult.loginMode || "organization";
+        const roleLabel = loginMode === LOGIN_MODE.DEPARTMENT ? "department" : "management";
+        sessionStore.setSession(telegramUserId, {
+          email: emailInput.email,
+          loginMode,
+        });
 
-        await sendMessage(telegramUserId, "📩 OTP sent to your email");
+        await sendMessage(
+          telegramUserId,
+          `📩 OTP sent to your email for ${roleLabel} login`
+        );
         sessionStore.appendHistory(
           telegramUserId,
           "assistant",
-          "OTP sent to your email."
+          `OTP sent to your email for ${roleLabel} login.`
         );
       } catch (error) {
         await sendMessage(
           telegramUserId,
-          "❌ Invalid email. Please enter a valid registered email."
+          "❌ Invalid email. Please enter a valid registered management or department email."
         );
         sessionStore.appendHistory(
           telegramUserId,
           "assistant",
-          "Invalid email. Please enter a valid registered email."
+          "Invalid email. Please enter a valid registered management or department email."
         );
       }
 
       return res.sendStatus(200);
     }
 
-    if (!session?.token && isOtpInput(text)) {
+    if (!session?.token && otpInput !== null) {
       if (!session?.email) {
-        await sendMessage(telegramUserId, "⚠️ Please enter your email first");
+        await sendMessage(
+          telegramUserId,
+          "⚠️ Please enter your management or department email first"
+        );
         sessionStore.appendHistory(
           telegramUserId,
           "assistant",
-          "Please enter your email first."
+          "Please enter your management or department email first."
         );
         return res.sendStatus(200);
       }
 
       try {
-        const response = await verifyOtp(session.email, Number(text));
-        const token = response.data.data.tokens.access.token;
+        const authResult = await verifyOtp(
+          session.email,
+          otpInput,
+          session.loginMode || LOGIN_MODE.ORGANIZATION
+        );
+        const token = authResult.response.data.data.tokens.access.token;
+        const role =
+          authResult.loginMode === LOGIN_MODE.DEPARTMENT
+            ? "DEPARTMENT"
+            : "MANAGEMENT";
 
-        sessionStore.setSession(telegramUserId, { token });
+        sessionStore.setSession(telegramUserId, {
+          token,
+          role,
+          loginMode: authResult.loginMode,
+        });
 
-        await sendMessage(telegramUserId, "✅ Login successful");
+        await sendMessage(
+          telegramUserId,
+          `✅ Login successful as ${role === "DEPARTMENT" ? "department" : "management"}`
+        );
         sessionStore.appendHistory(
           telegramUserId,
           "assistant",
-          "Login successful."
+          `Login successful as ${role === "DEPARTMENT" ? "department" : "management"}.`
         );
       } catch (error) {
         await sendMessage(telegramUserId, "❌ Invalid OTP. Please try again");
@@ -170,6 +229,7 @@ const handleAI = async (req, res) => {
     if (!session?.token) {
       const loginMessage = [
         "🔒 Please login first by sending your email address.",
+        "Tip: send `department your@email.com` if you want department login.",
         "",
         HELP_TEXT,
       ].join("\n");

@@ -20,6 +20,7 @@ The current Telegram agent scope is:
 - Department task + key result creation
 - Department objective key-result listing
 - Management-side task weightage update for department objectives
+- Department-side current score update for task key results
 - Dashboard year filters
 - Dashboard objective growth
 - Dashboard department growth
@@ -52,6 +53,7 @@ These collection/backend APIs are now mapped into `ai-agent-okr`:
 - `GET /dashboard/department-objective/:id/key-results`
 - `GET /dashboard/dept-objective/:id/key-results`
 - `PUT /dashboard/add-weightage/key-result/:id`
+- `PUT /dashboard/current-score/key-result/:id`
 - `GET /stats/year-filter`
 - `GET /stats/objective-growth/:year/:quarter`
 - `GET /stats/department-growth/:year/:quarter`
@@ -93,6 +95,8 @@ Natural language is supported, but these patterns are the most reliable:
 - `show score edit status`
 - `add weightage to tasks under my AI department objective`
 - `allocate task weightage with ai`
+- `update current score for my task`
+- `add current score to my task`
 - `suggest company objectives for next quarter`
 - `break this objective into department objectives`
 
@@ -117,6 +121,7 @@ Structured tool-mode endpoints available in `ai-agent-okr`:
 - `POST /tools/department-objectives/task-key-result`
 - `GET /tools/department-objectives/:id/key-results`
 - `PUT /tools/department-objectives/key-results/:id/weightage`
+- `PUT /tools/department-objectives/key-results/:id/current-score`
 - `GET /tools/dashboard/year-filters`
 - `GET /tools/dashboard/objective-growth?year=YYYY-YY&quarter=Q`
 - `GET /tools/dashboard/department-growth?year=YYYY-YY&quarter=Q`
@@ -147,6 +152,8 @@ Use these operator rules while prompting or extending the bot:
 - For management weightage changes, the guided flow is now: select department -> select department objective -> choose `Manual Weightage` or `AI Suggest Weightage`.
 - Manual weightage uses the backend validation rule that the total across all tasks under one department objective must stay at `100%` or below.
 - AI weightage mode generates a full task distribution, then applies it safely through the backend by resetting the selected department objective's task weightage before applying the final allocation.
+- For department current-score updates, the agent first checks `GET /setting/check-score-edit-status`. If `allowEdit` is false, it refuses the update and shows the current score-window status.
+- When the score window is open, the guided flow is: select department objective -> select task/key result -> send current score from `0` to `100`.
 
 ## Suggestions to Make This Feel More Like a Stronger AI Agent
 
@@ -165,7 +172,6 @@ These collection areas are still outside the Telegram agent scope in this pass:
 - Department setup-profile onboarding
 - Excel upload/download flows
 - Invite acceptance flow
-- Department current-score mutation flows
 - Coupon/subscription/invoice flows
 
 Those can be added next, but they are better treated as phase-2 because they need stricter confirmations and richer UI handling than basic Telegram text.

@@ -19,6 +19,7 @@ const {
   getDepartmentObjectiveKeyResults,
   getDepartmentObjectivesForDepartment,
   addWeightageToKeyResult,
+  updateCurrentScoreForKeyResult,
 } = require("./department.service");
 const {
   getYearFilters,
@@ -271,6 +272,23 @@ const formatScoreEditStatus = (details) => {
   ].join("\n");
 };
 
+const formatKeyResultCurrentScoreItems = (items) => {
+  if (!items?.length) {
+    return "No tasks found for this department objective.";
+  }
+
+  return items
+    .map((item, index) => {
+      return [
+        `${index + 1}. Task: ${item.objectiveInitiativeTask || item.task || "-"}`,
+        `   Key Result: ${item.keyResult || "-"}`,
+        `   Last Two Week Scores: ${item.weekBeforeLastWeekScore ?? 0}, ${item.lastWeekScore ?? 0}`,
+        `   Current Score: ${item.currentScore ?? 0}`,
+      ].join("\n");
+    })
+    .join("\n\n");
+};
+
 const formatKeyResultWeightageItems = (items) => {
   if (!items?.length) {
     return "No tasks found for this department objective.";
@@ -325,6 +343,8 @@ const HELP_TEXT = [
   '- "Add weightage to tasks under a department objective"',
   '- "Manage task weightage for the AI department"',
   '- "Allocate task weightage with AI"',
+  '- "Update current score for my department task"',
+  '- "Add current score to my task" (department login only, and only when the score window is open)',
   '- "Show my current department objectives"',
   '- "Show key results for my onboarding department objective"',
   '- "Suggest company objectives to grow my business"',
@@ -635,6 +655,31 @@ const buildInlineDepartmentObjectiveWeightageKeyboard = (
   ],
 });
 
+const buildInlineDepartmentObjectiveCurrentScoreKeyboard = (
+  departmentObjectives = []
+) => ({
+  inline_keyboard: [
+    ...departmentObjectives.map((item) => [
+      {
+        text: shortenButtonLabel(
+          `Score: ${item.objective || item.departmentObjective || "Department Objective"}`,
+          55
+        ),
+        callback_data: buildCallbackData(
+          "select_dept_obj_for_current_score",
+          String(item.id || item._id || item.departmentObjectiveId || "")
+        ),
+      },
+    ]),
+    [
+      {
+        text: "Close",
+        callback_data: buildCallbackData("close_current_score_flow", "close"),
+      },
+    ],
+  ],
+});
+
 const buildInlineSuggestedTaskKeyResultKeyboard = (items = []) => {
   const rows = items.map((item, index) => [
     {
@@ -786,6 +831,24 @@ const buildInlineKeyResultWeightageKeyboard = (items = []) => ({
       },
     ]),
     [{ text: "Close", callback_data: buildCallbackData("close_weightage_flow", "close") }],
+  ],
+});
+
+const buildInlineKeyResultCurrentScoreKeyboard = (items = []) => ({
+  inline_keyboard: [
+    ...items.map((item) => [
+      {
+        text: shortenButtonLabel(
+          `${item.objectiveInitiativeTask || item.task || "Task"} (${item.currentScore ?? 0})`,
+          55
+        ),
+        callback_data: buildCallbackData(
+          "select_key_result_for_current_score",
+          String(item.id || item._id || "")
+        ),
+      },
+    ]),
+    [{ text: "Close", callback_data: buildCallbackData("close_current_score_flow", "close") }],
   ],
 });
 
@@ -991,6 +1054,10 @@ const extractWeightageInput = (message) => {
   return value;
 };
 
+const extractCurrentScoreInput = (message) => {
+  return extractWeightageInput(message);
+};
+
 const getKeyResultIdentifier = (item) => {
   return String(item?.id || item?._id || item?.keyResultId || "").trim();
 };
@@ -1179,6 +1246,22 @@ const buildManualWeightagePrompt = ({
   ].join("\n");
 };
 
+const buildCurrentScorePrompt = ({
+  departmentObjectiveName,
+  selectedItem,
+}) => {
+  return [
+    `Department objective: ${departmentObjectiveName || "Department objective"}`,
+    `Selected task: ${getTaskDisplayName(selectedItem)}`,
+    `Current key result: ${selectedItem?.keyResult || "-"}`,
+    `Last two week scores: ${selectedItem?.weekBeforeLastWeekScore ?? 0}, ${selectedItem?.lastWeekScore ?? 0}`,
+    `Current score: ${selectedItem?.currentScore ?? 0}`,
+    "",
+    "Send the new current score from 0 to 100.",
+    "Example: 70",
+  ].join("\n");
+};
+
 const normalizeLooseText = (message) => {
   return String(message || "")
     .trim()
@@ -1264,6 +1347,18 @@ const isWeightageIntentMessage = (message) => {
     (normalized.includes("task") && normalized.includes("weight")) ||
     (normalized.includes("allocate") && normalized.includes("weight")) ||
     (normalized.includes("distribute") && normalized.includes("weight"))
+  );
+};
+
+const isCurrentScoreIntentMessage = (message) => {
+  const normalized = normalizeLooseText(message);
+
+  return (
+    normalized.includes("current score") ||
+    normalized.includes("add score") ||
+    normalized.includes("update score") ||
+    (normalized.includes("score") && normalized.includes("task")) ||
+    (normalized.includes("score") && normalized.includes("key result"))
   );
 };
 
@@ -2996,6 +3091,15 @@ const clearWeightageFlowState = {
   weightageFlowMode: "",
 };
 
+const clearCurrentScoreFlowState = {
+  pendingCurrentScoreDepartmentObjectiveId: "",
+  pendingCurrentScoreDepartmentObjectiveName: "",
+  pendingCurrentScoreItems: [],
+  pendingCurrentScoreKeyResultId: "",
+  pendingCurrentScoreTaskName: "",
+  awaitingCurrentScoreInput: false,
+};
+
 const runAgent = async ({ message, session, history }) => {
   const callbackSelection = parseCallbackData(message);
 
@@ -4176,6 +4280,236 @@ const runAgent = async ({ message, session, history }) => {
     };
   }
 
+  if (callbackSelection?.action === "select_dept_obj_for_current_score") {
+    if (String(session?.role || "").toUpperCase() !== "DEPARTMENT") {
+      return {
+        text: "Current score updates are available only for department login.",
+        clearSourceReplyMarkup: true,
+        sessionUpdates: clearCurrentScoreFlowState,
+      };
+    }
+
+    const scoreEditStatusResponse = await getScoreEditStatus(session.token);
+    const scoreEditDetails =
+      scoreEditStatusResponse.data.data.scoreEditDetails ||
+      scoreEditStatusResponse.data.data ||
+      {};
+
+    if (!scoreEditDetails.allowEdit) {
+      return {
+        text: [
+          "The score window is currently closed, so I cannot update current score right now.",
+          "",
+          formatScoreEditStatus(scoreEditDetails),
+        ].join("\n"),
+        clearSourceReplyMarkup: true,
+        sessionUpdates: clearCurrentScoreFlowState,
+      };
+    }
+
+    const [departmentObjectiveId] = callbackSelection.args;
+    const selectedDepartmentObjective = await findDepartmentObjective(
+      session.token,
+      {
+        departmentObjectiveId,
+        role: session?.role || "DEPARTMENT",
+      }
+    );
+
+    if (!selectedDepartmentObjective) {
+      return {
+        text: "I could not find that department objective anymore. Please try again.",
+      };
+    }
+
+    const selectedDepartmentObjectiveId =
+      selectedDepartmentObjective.id ||
+      selectedDepartmentObjective._id ||
+      selectedDepartmentObjective.departmentObjectiveId;
+    const selectedDepartmentObjectiveName =
+      getDepartmentObjectiveDisplayName(selectedDepartmentObjective);
+    const keyResultsResponse = await getDepartmentObjectiveKeyResults(
+      session.token,
+      selectedDepartmentObjectiveId,
+      session.role
+    );
+    const keyResultItems = extractDepartmentObjectiveKeyResultItems(
+      keyResultsResponse.data.data
+    );
+
+    if (!Array.isArray(keyResultItems) || !keyResultItems.length) {
+      return {
+        text: `No tasks or key results were found under "${selectedDepartmentObjectiveName}".`,
+        clearSourceReplyMarkup: true,
+        sessionUpdates: {
+          ...clearCurrentScoreFlowState,
+          pendingCurrentScoreDepartmentObjectiveId:
+            selectedDepartmentObjectiveId || "",
+          pendingCurrentScoreDepartmentObjectiveName:
+            selectedDepartmentObjectiveName,
+        },
+      };
+    }
+
+    return {
+      text: [
+        `Selected department objective: ${selectedDepartmentObjectiveName}`,
+        "",
+        formatKeyResultCurrentScoreItems(keyResultItems),
+        "",
+        "Choose the task below to update its current score.",
+      ].join("\n"),
+      replyMarkup: buildInlineKeyResultCurrentScoreKeyboard(keyResultItems),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        ...clearCurrentScoreFlowState,
+        pendingCurrentScoreDepartmentObjectiveId:
+          selectedDepartmentObjectiveId || "",
+        pendingCurrentScoreDepartmentObjectiveName:
+          selectedDepartmentObjectiveName,
+        pendingCurrentScoreItems: keyResultItems,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "select_key_result_for_current_score") {
+    const [keyResultId] = callbackSelection.args;
+    const selectedItem = Array.isArray(session?.pendingCurrentScoreItems)
+      ? session.pendingCurrentScoreItems.find(
+          (item) => getKeyResultIdentifier(item) === String(keyResultId)
+        )
+      : null;
+
+    if (!selectedItem) {
+      return {
+        text: "I could not find that task anymore. Please choose it again.",
+      };
+    }
+
+    return {
+      text: buildCurrentScorePrompt({
+        departmentObjectiveName:
+          session?.pendingCurrentScoreDepartmentObjectiveName || "",
+        selectedItem,
+      }),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        pendingCurrentScoreKeyResultId: keyResultId,
+        pendingCurrentScoreTaskName: getTaskDisplayName(selectedItem),
+        awaitingCurrentScoreInput: true,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "close_current_score_flow") {
+    return {
+      text: "Closed the current-score flow.",
+      clearSourceReplyMarkup: true,
+      sessionUpdates: clearCurrentScoreFlowState,
+    };
+  }
+
+  if (session?.awaitingCurrentScoreInput && session?.pendingCurrentScoreKeyResultId) {
+    if (String(session?.role || "").toUpperCase() !== "DEPARTMENT") {
+      return {
+        text: "Current score updates are available only for department login.",
+        sessionUpdates: clearCurrentScoreFlowState,
+      };
+    }
+
+    const scoreEditStatusResponse = await getScoreEditStatus(session.token);
+    const scoreEditDetails =
+      scoreEditStatusResponse.data.data.scoreEditDetails ||
+      scoreEditStatusResponse.data.data ||
+      {};
+
+    if (!scoreEditDetails.allowEdit) {
+      return {
+        text: [
+          "The score window is now closed, so I could not save the score.",
+          "",
+          formatScoreEditStatus(scoreEditDetails),
+        ].join("\n"),
+        sessionUpdates: clearCurrentScoreFlowState,
+      };
+    }
+
+    const currentScore = extractCurrentScoreInput(message);
+
+    if (currentScore === null) {
+      const selectedItem = Array.isArray(session?.pendingCurrentScoreItems)
+        ? session.pendingCurrentScoreItems.find(
+            (item) =>
+              getKeyResultIdentifier(item) ===
+              String(session.pendingCurrentScoreKeyResultId)
+          )
+        : null;
+
+      return {
+        text: selectedItem
+          ? buildCurrentScorePrompt({
+              departmentObjectiveName:
+                session?.pendingCurrentScoreDepartmentObjectiveName || "",
+              selectedItem,
+            })
+          : "Please send a valid current score like 65.",
+      };
+    }
+
+    try {
+      await updateCurrentScoreForKeyResult(
+        session.token,
+        session.pendingCurrentScoreKeyResultId,
+        {
+          currentScore,
+          departmentObjectiveId:
+            session.pendingCurrentScoreDepartmentObjectiveId,
+        }
+      );
+    } catch (error) {
+      return {
+        text: [
+          `I could not update current score for "${session.pendingCurrentScoreTaskName || "the selected task"}".`,
+          error?.response?.data?.message ||
+            error?.response?.data?.error ||
+            error.message,
+        ].join("\n"),
+      };
+    }
+
+    const refreshedResponse = await getDepartmentObjectiveKeyResults(
+      session.token,
+      session.pendingCurrentScoreDepartmentObjectiveId,
+      session.role
+    );
+    const refreshedItems = extractDepartmentObjectiveKeyResultItems(
+      refreshedResponse.data.data
+    );
+
+    return {
+      text: [
+        `Updated current score for "${session.pendingCurrentScoreTaskName || "the selected task"}" to ${currentScore}.`,
+        "",
+        formatKeyResultCurrentScoreItems(
+          Array.isArray(refreshedItems) ? refreshedItems : []
+        ),
+        "",
+        "Choose another task below if you want to continue updating scores.",
+      ].join("\n"),
+      replyMarkup: buildInlineKeyResultCurrentScoreKeyboard(
+        Array.isArray(refreshedItems) ? refreshedItems : []
+      ),
+      sessionUpdates: {
+        pendingCurrentScoreItems: Array.isArray(refreshedItems)
+          ? refreshedItems
+          : [],
+        pendingCurrentScoreKeyResultId: "",
+        pendingCurrentScoreTaskName: "",
+        awaitingCurrentScoreInput: false,
+      },
+    };
+  }
+
   const currentObjectivesResponse = await getObjectives(session.token);
   const currentObjectives =
     currentObjectivesResponse.data.data.objectives || [];
@@ -4210,6 +4544,54 @@ const runAgent = async ({ message, session, history }) => {
         ...clearWeightageFlowState,
         pendingDepartmentOptions: buildDepartmentSessionOptions(departments),
       },
+    };
+  }
+
+  if (isCurrentScoreIntentMessage(message)) {
+    if (String(session?.role || "").toUpperCase() !== "DEPARTMENT") {
+      return {
+        text: "Current score updates are available only for department login.",
+      };
+    }
+
+    const scoreEditStatusResponse = await getScoreEditStatus(session.token);
+    const scoreEditDetails =
+      scoreEditStatusResponse.data.data.scoreEditDetails ||
+      scoreEditStatusResponse.data.data ||
+      {};
+
+    if (!scoreEditDetails.allowEdit) {
+      return {
+        text: [
+          "The score window is currently closed, so I cannot update current score right now.",
+          "",
+          formatScoreEditStatus(scoreEditDetails),
+        ].join("\n"),
+      };
+    }
+
+    const departmentObjectivesResponse = await getDepartmentObjectives(
+      session.token,
+      ""
+    );
+    const departmentObjectives =
+      departmentObjectivesResponse.data.data.departmentObjectives ||
+      departmentObjectivesResponse.data.data.departments ||
+      departmentObjectivesResponse.data.data ||
+      [];
+
+    if (!Array.isArray(departmentObjectives) || !departmentObjectives.length) {
+      return {
+        text: "I could not find any department objectives for your department yet.",
+      };
+    }
+
+    return {
+      text: "The score window is open. Select the department objective first to update current score.",
+      replyMarkup: buildInlineDepartmentObjectiveCurrentScoreKeyboard(
+        departmentObjectives
+      ),
+      sessionUpdates: clearCurrentScoreFlowState,
     };
   }
 

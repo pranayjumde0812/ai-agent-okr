@@ -16,6 +16,7 @@ const {
   createDepartmentTaskKeyResultTool,
   getDepartmentObjectiveKeyResultsTool,
   updateDepartmentObjectiveKeyResultWeightageTool,
+  updateDepartmentObjectiveKeyResultCurrentScoreTool,
   getDashboardYearFiltersTool,
   getDashboardObjectiveGrowthTool,
   getDashboardDepartmentGrowthTool,
@@ -54,6 +55,10 @@ router.get("/department-objectives/:id/key-results", getDepartmentObjectiveKeyRe
 router.put(
   "/department-objectives/key-results/:id/weightage",
   updateDepartmentObjectiveKeyResultWeightageTool
+);
+router.put(
+  "/department-objectives/key-results/:id/current-score",
+  updateDepartmentObjectiveKeyResultCurrentScoreTool
 );
 
 router.get("/dashboard/year-filters", getDashboardYearFiltersTool);

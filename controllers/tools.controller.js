@@ -20,6 +20,7 @@ const {
   getCurrentDepartmentObjectives,
   getDepartmentObjectiveKeyResults,
   addWeightageToKeyResult,
+  updateCurrentScoreForKeyResult,
 } = require("../services/department.service");
 const {
   getYearFilters,
@@ -453,6 +454,40 @@ const updateDepartmentObjectiveKeyResultWeightageTool = async (req, res) => {
   }
 };
 
+const updateDepartmentObjectiveKeyResultCurrentScoreTool = async (req, res) => {
+  const token = requireToken(req, res);
+  if (!token) return;
+
+  const { id } = req.params;
+  const { currentScore, departmentObjectiveId } = req.body;
+
+  if (!id || currentScore === undefined || !departmentObjectiveId) {
+    return res.status(400).json({
+      error: "id, currentScore, and departmentObjectiveId are required",
+    });
+  }
+
+  try {
+    const response = await updateCurrentScoreForKeyResult(token, id, {
+      currentScore: Number(currentScore),
+      departmentObjectiveId,
+    });
+
+    return res.json({
+      ok: true,
+      message: "Current score updated successfully",
+      data: response.data.data || response.data,
+    });
+  } catch (error) {
+    return safeError(
+      res,
+      error,
+      "Failed to update current score",
+      getSessionUserId(req)
+    );
+  }
+};
+
 const getDashboardYearFiltersTool = async (req, res) => {
   const token = requireToken(req, res);
   if (!token) return;
@@ -706,6 +741,11 @@ const capabilitiesTool = async (req, res) => {
         path: "/tools/department-objectives/key-results/:id/weightage",
       },
       {
+        name: "update_department_objective_key_result_current_score",
+        method: "PUT",
+        path: "/tools/department-objectives/key-results/:id/current-score",
+      },
+      {
         name: "get_dashboard_year_filters",
         method: "GET",
         path: "/tools/dashboard/year-filters",
@@ -767,6 +807,7 @@ module.exports = {
   createDepartmentTaskKeyResultTool,
   getDepartmentObjectiveKeyResultsTool,
   updateDepartmentObjectiveKeyResultWeightageTool,
+  updateDepartmentObjectiveKeyResultCurrentScoreTool,
   getDashboardYearFiltersTool,
   getDashboardObjectiveGrowthTool,
   getDashboardDepartmentGrowthTool,

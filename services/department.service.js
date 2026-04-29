@@ -75,6 +75,14 @@ const addWeightageToKeyResult = (token, keyResultId, payload) => {
   );
 };
 
+const updateCurrentScoreForKeyResult = (token, keyResultId, payload) => {
+  return axios.put(
+    `${config.apiBaseUrl}/dashboard/current-score/key-result/${keyResultId}`,
+    payload,
+    withAuth(token)
+  );
+};
+
 const getDepartmentObjectivesForDepartment = (token, departmentId, role = "MANAGEMENT") => {
   return axios.get(
     departmentId
@@ -94,4 +102,5 @@ module.exports = {
   getDepartmentObjectiveKeyResults,
   getDepartmentObjectivesForDepartment,
   addWeightageToKeyResult,
+  updateCurrentScoreForKeyResult,
 };

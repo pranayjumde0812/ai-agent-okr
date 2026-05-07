@@ -10,14 +10,42 @@ const normalizeTelegramText = (text) => {
 };
 
 const sendMessage = async (chatId, text, options = {}) => {
-  await axios.post(
-    `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
-    {
-      chat_id: chatId,
-      text: normalizeTelegramText(text),
-      ...(options.reply_markup ? { reply_markup: options.reply_markup } : {}),
+  const payload = {
+    chat_id: chatId,
+    text: normalizeTelegramText(text),
+    ...(options.reply_markup ? { reply_markup: options.reply_markup } : {}),
+  };
+
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
+      payload
+    );
+  } catch (error) {
+    const telegramDescription =
+      error?.response?.data?.description || error?.message || "Unknown Telegram error";
+
+    if (options.reply_markup) {
+      console.error("TELEGRAM SEND ERROR WITH MARKUP:", telegramDescription);
+      console.error(
+        "TELEGRAM MARKUP PAYLOAD:",
+        JSON.stringify(options.reply_markup)
+      );
+
+      await axios.post(
+        `https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`,
+        {
+          chat_id: chatId,
+          text: normalizeTelegramText(
+            `${text}\n\nButtons could not be shown, so you can reply manually.`
+          ),
+        }
+      );
+      return;
     }
-  );
+
+    throw error;
+  }
 };
 
 const answerCallbackQuery = async (callbackQueryId, text = "") => {

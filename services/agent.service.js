@@ -189,30 +189,155 @@ const extractDepartmentObjectiveKeyResultItems = (payload) => {
   return payload.response || payload.keyResults || payload.tasks || payload.data || [];
 };
 
+const formatDashboardNumber = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+
+  const numericValue = Number(value);
+
+  if (Number.isNaN(numericValue)) {
+    return String(value);
+  }
+
+  return Number.isInteger(numericValue)
+    ? String(numericValue)
+    : numericValue.toFixed(2).replace(/\.?0+$/, "");
+};
+
+const formatObjectiveGrowthStats = (title, payload) => {
+  const objectives = Array.isArray(payload?.objectives) ? payload.objectives : [];
+
+  return [
+    `${title}:`,
+    `Overall Progress: ${formatDashboardNumber(payload?.overAllProgressPercentage)}`,
+    `Objectives Count: ${formatDashboardNumber(payload?.countOfObjective)}`,
+    "",
+    objectives.length
+      ? objectives
+          .map((objective, index) => [
+            `${index + 1}. ${objective.objectiveName || "Objective"}`,
+            `   Quarter Score: ${formatDashboardNumber(objective.quarterScore)}`,
+          ].join("\n"))
+          .join("\n\n")
+      : "No objectives found for this period.",
+  ].join("\n");
+};
+
+const formatDepartmentGrowthStats = (title, payload) => {
+  if (!Array.isArray(payload) || !payload.length) {
+    return `${title}:\nNo department growth data found for this period.`;
+  }
+
+  return [
+    `${title}:`,
+    "",
+    ...payload.map((department, index) => {
+      const quarterScores = Array.isArray(department?.quarterScore)
+        ? department.quarterScore
+            .map((item) => `M${item.month}: ${formatDashboardNumber(item.score)}`)
+            .join(", ")
+        : "-";
+
+      return [
+        `${index + 1}. ${department.departmentName || "Department"}`,
+        `   Monthly Scores: ${quarterScores}`,
+      ].join("\n");
+    }),
+  ].join("\n");
+};
+
+const formatYearlyGrowthStats = (title, payload) => {
+  if (!Array.isArray(payload) || !payload.length) {
+    return `${title}:\nNo yearly growth data found.`;
+  }
+
+  return [
+    `${title}:`,
+    "",
+    ...payload.map((item) => {
+      return `Quarter ${formatDashboardNumber(item.quarter)}: ${formatDashboardNumber(item.score)}`;
+    }),
+  ].join("\n");
+};
+
+const normalizeDashboardPayload = (payload) => {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, "objectivesGrowth")) {
+    return payload.objectivesGrowth;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, "departmentsGrowth")) {
+    return payload.departmentsGrowth;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, "yearGrowth")) {
+    return payload.yearGrowth;
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "yearFilter") ||
+    Object.prototype.hasOwnProperty.call(payload, "calendarType")
+  ) {
+    return payload;
+  }
+
+  return payload;
+};
+
 const formatDashboardStats = (title, payload) => {
-  if (payload === null || payload === undefined) {
+  const normalizedPayload = normalizeDashboardPayload(payload);
+
+  if (normalizedPayload === null || normalizedPayload === undefined) {
     return `${title}: No data found.`;
   }
 
-  if (Array.isArray(payload)) {
-    if (!payload.length) {
+  if (
+    typeof normalizedPayload === "object" &&
+    !Array.isArray(normalizedPayload) &&
+    (Array.isArray(normalizedPayload.objectives) ||
+      Object.prototype.hasOwnProperty.call(normalizedPayload, "overAllProgressPercentage") ||
+      Object.prototype.hasOwnProperty.call(normalizedPayload, "countOfObjective"))
+  ) {
+    return formatObjectiveGrowthStats(title, normalizedPayload);
+  }
+
+  if (
+    Array.isArray(normalizedPayload) &&
+    normalizedPayload.every((item) => Array.isArray(item?.quarterScore))
+  ) {
+    return formatDepartmentGrowthStats(title, normalizedPayload);
+  }
+
+  if (
+    Array.isArray(normalizedPayload) &&
+    normalizedPayload.every((item) => Object.prototype.hasOwnProperty.call(item || {}, "quarter"))
+  ) {
+    return formatYearlyGrowthStats(title, normalizedPayload);
+  }
+
+  if (Array.isArray(normalizedPayload)) {
+    if (!normalizedPayload.length) {
       return `${title}: No data found.`;
     }
 
     return [
       `${title}:`,
-      ...payload.map((item, index) => `${index + 1}. ${JSON.stringify(item)}`),
+      ...normalizedPayload.map((item, index) => `${index + 1}. ${JSON.stringify(item)}`),
     ].join("\n");
   }
 
-  if (typeof payload === "object") {
+  if (typeof normalizedPayload === "object") {
     return [
       `${title}:`,
-      ...Object.entries(payload).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
+      ...Object.entries(normalizedPayload).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
     ].join("\n");
   }
 
-  return `${title}: ${payload}`;
+  return `${title}: ${normalizedPayload}`;
 };
 
 const toTitleCase = (value) => {
@@ -871,6 +996,32 @@ const buildInlineSuggestedWeightageKeyboard = (items = []) => ({
   ],
 });
 
+const buildInlineDashboardYearKeyboard = (yearOptions = []) => ({
+  inline_keyboard: [
+    yearOptions.map((item, index) => ({
+      text: item.year,
+      callback_data: buildCallbackData("dashboard_pick_year", String(index)),
+    })),
+    [
+      {
+        text: "Manual Year Entry",
+        callback_data: buildCallbackData("dashboard_manual_year", "manual"),
+      },
+    ],
+    [{ text: "Close", callback_data: buildCallbackData("dashboard_close", "close") }],
+  ],
+});
+
+const buildInlineDashboardQuarterKeyboard = (quarters = []) => ({
+  inline_keyboard: [
+    quarters.map((quarter) => ({
+      text: `Q${quarter}`,
+      callback_data: buildCallbackData("dashboard_pick_quarter", String(quarter)),
+    })),
+    [{ text: "Close", callback_data: buildCallbackData("dashboard_close", "close") }],
+  ],
+});
+
 const buildSuggestedObjectiveKeyboard = (objectives = []) => {
   const rows = objectives.map((objective) => [
     buildObjectiveActionLabel("Create", objective),
@@ -1270,6 +1421,229 @@ const normalizeLooseText = (message) => {
     .replace(/\s+/g, " ");
 };
 
+const clearDashboardStatsFlowState = {
+  awaitingDashboardStatsInput: false,
+  pendingDashboardAction: "",
+  pendingDashboardYear: "",
+  pendingDashboardQuarter: "",
+  pendingDashboardYearOptions: [],
+};
+
+const extractDashboardStatsInput = (message) => {
+  const normalized = String(message || "").trim();
+
+  if (!normalized) {
+    return {
+      year: "",
+      quarter: "",
+    };
+  }
+
+  const financialYearMatch = normalized.match(/\b(20\d{2}-\d{2})\b/);
+  const standardYearMatch = normalized.match(/\b(20\d{2})\b/);
+  const quarterMatch =
+    normalized.match(/\bquarter\s*([1-4])\b/i) ||
+    normalized.match(/\bq\s*([1-4])\b/i);
+
+  return {
+    year: financialYearMatch?.[1] || standardYearMatch?.[1] || "",
+    quarter: quarterMatch?.[1] || "",
+  };
+};
+
+const extractAvailableDashboardYears = (payload) => {
+  const yearFilterItems = Array.isArray(payload?.yearFilter)
+    ? payload.yearFilter
+    : Array.isArray(payload?.result)
+      ? payload.result
+      : Array.isArray(payload)
+        ? payload
+        : [];
+
+  const years = yearFilterItems
+    .map((item) => String(item?.year || "").trim())
+    .filter(Boolean);
+
+  const yearOptions = yearFilterItems
+    .map((item) => ({
+      year: String(item?.year || "").trim(),
+      quarters: Array.isArray(item?.quarters)
+        ? item.quarters
+            .map((quarter) => Number(quarter))
+            .filter((quarter) => quarter >= 1 && quarter <= 4)
+        : [1, 2, 3, 4],
+    }))
+    .filter((item) => item.year);
+
+  return {
+    years,
+    yearOptions,
+    calendarType: String(payload?.calendarType || "").trim().toLowerCase(),
+  };
+};
+
+const formatAvailableDashboardYears = (years = []) => {
+  if (!years.length) {
+    return "";
+  }
+
+  return years.join(", ");
+};
+
+const getRecentDashboardYearOptions = (yearOptions = [], limit = 3) => {
+  return [...yearOptions].slice(-limit).reverse();
+};
+
+const getQuarterOptionsForYear = (year, yearOptions = []) => {
+  return (
+    yearOptions.find((item) => item.year === String(year || "").trim())
+      ?.quarters || [1, 2, 3, 4]
+  );
+};
+
+const buildDashboardStatsPrompt = ({
+  action,
+  needsYear = false,
+  needsQuarter = false,
+  availableYears = [],
+  calendarType = "",
+}) => {
+  const subject =
+    action === "get_dashboard_department_growth"
+      ? "department growth"
+      : action === "get_dashboard_yearly_growth"
+        ? "yearly growth"
+        : "organization growth";
+
+  const requestedParts = [];
+
+  if (needsYear) {
+    requestedParts.push("year");
+  }
+
+  if (needsQuarter) {
+    requestedParts.push("quarter");
+  }
+
+  const promptLine = requestedParts.length === 2
+    ? `Choose the year first for ${subject}, then I will show the quarter options.`
+    : requestedParts[0] === "year"
+      ? `Which year would you like to see for ${subject}?`
+      : `Which quarter would you like to see for ${subject}?`;
+
+  const yearHint = availableYears.length
+    ? calendarType === "financial"
+      ? `Available financial years: ${formatAvailableDashboardYears(availableYears)}`
+      : `Available years: ${formatAvailableDashboardYears(availableYears)}`
+    : "";
+
+  const exampleLine =
+    needsYear && needsQuarter
+      ? `Example: ${availableYears[0] || "2026"} quarter 2`
+      : needsYear
+        ? `Example: ${availableYears[0] || "2026"}`
+        : "Example: quarter 2";
+  const guidanceLine =
+    needsYear && needsQuarter
+      ? "Use one of the recent year buttons below, or choose manual entry."
+      : needsYear
+        ? "You can type the year naturally, or choose one below."
+        : "You can type the quarter naturally, or choose one below.";
+
+  return [promptLine, yearHint, guidanceLine, exampleLine]
+    .filter(Boolean)
+    .join("\n");
+};
+
+const resolveDashboardYearInput = async ({
+  token,
+  role,
+  rawYear,
+}) => {
+  const normalizedYear = String(rawYear || "").trim();
+
+  if (!normalizedYear) {
+    return {
+      year: "",
+      availableYears: [],
+      calendarType: "",
+    };
+  }
+
+  try {
+    const response = await getYearFilters(token, role);
+    const { years, calendarType } = extractAvailableDashboardYears(
+      response.data.data
+    );
+    const { yearOptions } = extractAvailableDashboardYears(response.data.data);
+
+    if (!years.length) {
+      return {
+        year: normalizedYear,
+        availableYears: [],
+        yearOptions: [],
+        calendarType,
+      };
+    }
+
+    if (years.includes(normalizedYear)) {
+      return {
+        year: normalizedYear,
+        availableYears: years,
+        yearOptions,
+        calendarType,
+      };
+    }
+
+    if (/^\d{4}$/.test(normalizedYear)) {
+      const matchingFinancialYears = years.filter((yearOption) => {
+        return (
+          yearOption.startsWith(`${normalizedYear}-`) ||
+          yearOption.endsWith(`-${normalizedYear.slice(-2)}`)
+        );
+      });
+
+      if (matchingFinancialYears.length === 1) {
+        return {
+          year: matchingFinancialYears[0],
+          availableYears: years,
+          yearOptions,
+          calendarType,
+        };
+      }
+
+      if (matchingFinancialYears.length > 1) {
+        return {
+          year: "",
+          availableYears: years,
+          yearOptions,
+          calendarType,
+          clarification:
+            `I found multiple financial-year matches for ${normalizedYear}. ` +
+            `Please choose one of these exact years: ${formatAvailableDashboardYears(matchingFinancialYears)}`,
+        };
+      }
+    }
+
+    return {
+      year: "",
+      availableYears: years,
+      yearOptions,
+      calendarType,
+      clarification:
+        `I could not match "${normalizedYear}" to an available dashboard year. ` +
+        `Please choose one of these exact years: ${formatAvailableDashboardYears(years)}`,
+    };
+  } catch (error) {
+    return {
+      year: normalizedYear,
+      availableYears: [],
+      yearOptions: [],
+      calendarType: "",
+    };
+  }
+};
+
 const isScheduleIntentMessage = (message) => {
   const normalized = normalizeLooseText(message);
   const hasScheduleWord =
@@ -1360,6 +1734,34 @@ const isCurrentScoreIntentMessage = (message) => {
     (normalized.includes("score") && normalized.includes("task")) ||
     (normalized.includes("score") && normalized.includes("key result"))
   );
+};
+
+const getDashboardIntentAction = (message) => {
+  const normalized = normalizeLooseText(message);
+
+  if (
+    normalized.includes("yearly growth") ||
+    (normalized.includes("growth") && normalized.includes("yearly"))
+  ) {
+    return "get_dashboard_yearly_growth";
+  }
+
+  if (
+    normalized.includes("department growth") ||
+    (normalized.includes("growth") && normalized.includes("department"))
+  ) {
+    return "get_dashboard_department_growth";
+  }
+
+  if (
+    normalized.includes("organization growth") ||
+    normalized.includes("objective growth") ||
+    (normalized.includes("growth") && normalized.includes("organization"))
+  ) {
+    return "get_dashboard_objective_growth";
+  }
+
+  return "";
 };
 
 const padTimePart = (value) => String(value).padStart(2, "0");
@@ -2907,8 +3309,8 @@ const buildFinalMessages = ({ message, plan, toolResult }) => {
         `Original user message: ${message}`,
         `Chosen action: ${plan.action}`,
         `Planner hint: ${plan.reply || "-"}`,
-        "Backend/tool result:",
-        JSON.stringify(toolResult, null, 2),
+        "Formatted result to present to the user:",
+        toolResult.summary || "No summary available.",
       ].join("\n"),
     },
   ];
@@ -3102,6 +3504,240 @@ const clearCurrentScoreFlowState = {
 
 const runAgent = async ({ message, session, history }) => {
   const callbackSelection = parseCallbackData(message);
+
+  if (callbackSelection?.action === "dashboard_close") {
+    return {
+      text: "Closed the dashboard growth flow.",
+      clearSourceReplyMarkup: true,
+      sessionUpdates: clearDashboardStatsFlowState,
+    };
+  }
+
+  if (callbackSelection?.action === "dashboard_manual_year") {
+    return {
+      text: [
+        "Send the year you want to use.",
+        "You can type it naturally.",
+        "Examples: 2026 or 2026-27",
+      ].join("\n"),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        awaitingDashboardStatsInput: true,
+        pendingDashboardQuarter: "",
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "dashboard_manual_quarter") {
+    return {
+      text: [
+        `Selected year: ${session?.pendingDashboardYear || "-"}`,
+        "",
+        "Now send the quarter naturally.",
+        "Examples: quarter 2 or q2",
+      ].join("\n"),
+      clearSourceReplyMarkup: true,
+      sessionUpdates: {
+        awaitingDashboardStatsInput: true,
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "dashboard_pick_year") {
+    const selectedYearOption = Array.isArray(session?.pendingDashboardYearOptions)
+      ? session.pendingDashboardYearOptions[Number(callbackSelection.args[0])]
+      : null;
+
+    if (!selectedYearOption?.year) {
+      return {
+        text: "I could not read that year selection. Please try again.",
+      };
+    }
+
+    if (session?.pendingDashboardAction === "get_dashboard_yearly_growth") {
+      const toolResult = await executeAction({
+        plan: {
+          action: session.pendingDashboardAction,
+          year: selectedYearOption.year,
+        },
+        session,
+      });
+
+      return {
+        text: toolResult.summary || "Done.",
+        clearSourceReplyMarkup: true,
+        sessionUpdates: clearDashboardStatsFlowState,
+      };
+    }
+
+    return {
+      text: [
+        `Selected year: ${selectedYearOption.year}`,
+        "",
+        "Now choose the quarter below or type it naturally.",
+      ].join("\n"),
+      clearSourceReplyMarkup: true,
+      replyMarkup: buildInlineDashboardQuarterKeyboard(
+        selectedYearOption.quarters?.length ? selectedYearOption.quarters : [1, 2, 3, 4]
+      ),
+      sessionUpdates: {
+        pendingDashboardYear: selectedYearOption.year,
+        pendingDashboardQuarter: "",
+      },
+    };
+  }
+
+  if (callbackSelection?.action === "dashboard_pick_quarter") {
+    const selectedQuarter = String(callbackSelection.args[0] || "").trim();
+
+    if (!session?.pendingDashboardYear) {
+      return {
+        text: "Please choose the year first.",
+      };
+    }
+
+    if (!selectedQuarter) {
+      return {
+        text: "I could not read that quarter selection. Please try again.",
+      };
+    }
+
+    const toolResult = await executeAction({
+      plan: {
+        action: session.pendingDashboardAction,
+        year: session.pendingDashboardYear,
+        quarter: selectedQuarter,
+      },
+      session,
+    });
+
+    return {
+      text: toolResult.summary || "Done.",
+      clearSourceReplyMarkup: true,
+      sessionUpdates: clearDashboardStatsFlowState,
+    };
+  }
+
+  if (session?.awaitingDashboardStatsInput && session?.pendingDashboardAction) {
+    const extractedInput = extractDashboardStatsInput(message);
+    const requestedYear = extractedInput.year || session.pendingDashboardYear || "";
+    const requestedQuarter =
+      extractedInput.quarter || session.pendingDashboardQuarter || "";
+    const resolvedYear = await resolveDashboardYearInput({
+      token: session.token,
+      role: session.role,
+      rawYear: requestedYear,
+    });
+
+    if (resolvedYear.clarification) {
+      const recentYearOptions = getRecentDashboardYearOptions(
+        resolvedYear.yearOptions || []
+      );
+
+      return {
+        text: resolvedYear.clarification,
+        replyMarkup: recentYearOptions.length
+          ? buildInlineDashboardYearKeyboard(recentYearOptions)
+          : undefined,
+        sessionUpdates: {
+          pendingDashboardYear: "",
+          pendingDashboardQuarter: requestedQuarter,
+          pendingDashboardYearOptions: recentYearOptions,
+        },
+      };
+    }
+
+    if (session.pendingDashboardAction === "get_dashboard_yearly_growth") {
+      if (!resolvedYear.year) {
+        const recentYearOptions = getRecentDashboardYearOptions(
+          resolvedYear.yearOptions || []
+        );
+
+        return {
+          text: buildDashboardStatsPrompt({
+            action: session.pendingDashboardAction,
+            needsYear: true,
+            availableYears: resolvedYear.availableYears,
+            calendarType: resolvedYear.calendarType,
+          }),
+          ...(recentYearOptions.length
+            ? {
+                replyMarkup: buildInlineDashboardYearKeyboard(
+                  recentYearOptions
+                ),
+              }
+            : {}),
+          sessionUpdates: {
+            pendingDashboardYearOptions: recentYearOptions,
+          },
+        };
+      }
+
+      const toolResult = await executeAction({
+        plan: {
+          action: session.pendingDashboardAction,
+          year: resolvedYear.year,
+        },
+        session,
+      });
+
+      return {
+        text: toolResult.summary || "Done.",
+        sessionUpdates: clearDashboardStatsFlowState,
+      };
+    }
+
+    if (!resolvedYear.year || !requestedQuarter) {
+      const quarterOptions = getQuarterOptionsForYear(
+        resolvedYear.year,
+        resolvedYear.yearOptions || session?.pendingDashboardYearOptions || []
+      );
+      const recentYearOptions = getRecentDashboardYearOptions(
+        resolvedYear.yearOptions || session?.pendingDashboardYearOptions || []
+      );
+
+      return {
+        text: buildDashboardStatsPrompt({
+          action: session.pendingDashboardAction,
+          needsYear: !resolvedYear.year,
+          needsQuarter: !requestedQuarter,
+          availableYears: resolvedYear.availableYears,
+          calendarType: resolvedYear.calendarType,
+        }),
+        ...(!resolvedYear.year && recentYearOptions.length
+          ? {
+              replyMarkup: buildInlineDashboardYearKeyboard(
+                recentYearOptions
+              ),
+            }
+          : {}),
+        ...(resolvedYear.year && !requestedQuarter
+          ? {
+              replyMarkup: buildInlineDashboardQuarterKeyboard(quarterOptions),
+            }
+          : {}),
+        sessionUpdates: {
+          pendingDashboardYear: resolvedYear.year,
+          pendingDashboardQuarter: requestedQuarter,
+          pendingDashboardYearOptions: recentYearOptions,
+        },
+      };
+    }
+
+    const toolResult = await executeAction({
+      plan: {
+        action: session.pendingDashboardAction,
+        year: resolvedYear.year,
+        quarter: requestedQuarter,
+      },
+      session,
+    });
+
+    return {
+      text: toolResult.summary || "Done.",
+      sessionUpdates: clearDashboardStatsFlowState,
+    };
+  }
 
   if (session?.awaitingScheduleSetupConfirmation && isScheduleAffirmative(message)) {
     return {
@@ -4595,6 +5231,38 @@ const runAgent = async ({ message, session, history }) => {
     };
   }
 
+  const dashboardIntentAction = getDashboardIntentAction(message);
+
+  if (dashboardIntentAction) {
+    const yearFiltersResponse = await getYearFilters(session.token, session.role);
+    const { years, yearOptions, calendarType } = extractAvailableDashboardYears(
+      yearFiltersResponse.data.data
+    );
+    const recentYearOptions = getRecentDashboardYearOptions(yearOptions || []);
+
+    return {
+      text: buildDashboardStatsPrompt({
+        action: dashboardIntentAction,
+        needsYear: true,
+        needsQuarter: dashboardIntentAction !== "get_dashboard_yearly_growth",
+        availableYears: years,
+        calendarType,
+      }),
+      ...(recentYearOptions.length
+        ? {
+            replyMarkup: buildInlineDashboardYearKeyboard(recentYearOptions),
+          }
+        : {}),
+      sessionUpdates: {
+        awaitingDashboardStatsInput: true,
+        pendingDashboardAction: dashboardIntentAction,
+        pendingDashboardYear: "",
+        pendingDashboardQuarter: "",
+        pendingDashboardYearOptions: recentYearOptions,
+      },
+    };
+  }
+
   if (
     normalizedMessage.includes("schedule") &&
     (normalizedMessage.includes("set") ||
@@ -4829,6 +5497,60 @@ const runAgent = async ({ message, session, history }) => {
 
   const toolResult = await executeAction({ plan, session });
 
+  if (
+    !toolResult.success &&
+    [
+      "get_dashboard_objective_growth",
+      "get_dashboard_department_growth",
+      "get_dashboard_yearly_growth",
+    ].includes(toolResult.action)
+  ) {
+    const resolvedYear = await resolveDashboardYearInput({
+      token: session.token,
+      role: session.role,
+      rawYear: plan.year,
+    });
+    const recentYearOptions = getRecentDashboardYearOptions(
+      resolvedYear.yearOptions || []
+    );
+
+    return {
+      text: buildDashboardStatsPrompt({
+        action: toolResult.action,
+        needsYear: toolResult.action === "get_dashboard_yearly_growth"
+          ? !resolvedYear.year
+          : !resolvedYear.year,
+        needsQuarter: toolResult.action !== "get_dashboard_yearly_growth" && !plan.quarter,
+        availableYears: resolvedYear.availableYears,
+        calendarType: resolvedYear.calendarType,
+      }),
+      sessionUpdates: {
+        awaitingDashboardStatsInput: true,
+        pendingDashboardAction: toolResult.action,
+        pendingDashboardYear: resolvedYear.year,
+        pendingDashboardQuarter: plan.quarter || "",
+        pendingDashboardYearOptions: recentYearOptions,
+      },
+      ...(!resolvedYear.year && recentYearOptions.length
+        ? {
+            replyMarkup: buildInlineDashboardYearKeyboard(
+              recentYearOptions
+            ),
+          }
+        : {}),
+      ...(resolvedYear.year && toolResult.action !== "get_dashboard_yearly_growth" && !plan.quarter
+        ? {
+            replyMarkup: buildInlineDashboardQuarterKeyboard(
+              getQuarterOptionsForYear(
+                resolvedYear.year,
+                resolvedYear.yearOptions || []
+              )
+            ),
+          }
+        : {}),
+    };
+  }
+
   if (toolResult.action === "get_schedule_details" && !toolResult.hasSchedule) {
     return {
       text: toolResult.summary,
@@ -4848,6 +5570,19 @@ const runAgent = async ({ message, session, history }) => {
         awaitingScheduleSetupConfirmation: false,
         promptedForScheduleSetup: false,
       },
+    };
+  }
+
+  if (
+    [
+      "get_dashboard_year_filters",
+      "get_dashboard_objective_growth",
+      "get_dashboard_department_growth",
+      "get_dashboard_yearly_growth",
+    ].includes(toolResult.action)
+  ) {
+    return {
+      text: toolResult.summary || "Done.",
     };
   }
 
